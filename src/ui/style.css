@@ -126,7 +126,7 @@ button.card:hover { border-color: var(--gold); filter: none; }
 .pip { flex: 1; height: 8px; border: 1px solid var(--gold-dim); transform: skewX(-20deg); }
 .pip.on { background: var(--gold); border-color: var(--gold); }
 .pip.missing { border-color: var(--bad); background: repeating-linear-gradient(45deg, var(--bad) 0 2px, transparent 2px 5px); }
-.mini { display: flex; justify-content: space-between; font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; color: var(--muted); gap: 0.5rem; }
+.mini { display: flex; flex-wrap: wrap; justify-content: space-between; font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; color: var(--muted); gap: 0.5rem; }
 
 .phases { display: flex; align-items: center; gap: 0.3rem; flex-wrap: wrap; margin: 0.5rem 0; }
 .phase { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; padding: 0.05rem 0.4rem; border-left: 3px solid; background: rgba(255, 255, 255, 0.03); }
@@ -213,10 +213,40 @@ button.card:hover { border-color: var(--gold); filter: none; }
 .prose ol, .prose ul { padding-left: 1.2rem; }
 .prose li { margin: 0.25rem 0; }
 
+/* v2: team, orders, lore */
+.traits { display: flex; flex-wrap: wrap; gap: 0.25rem; margin: 0.35rem 0; }
+.trait { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; padding: 0.02rem 0.35rem; border-radius: 2px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.trait.personality { color: var(--stealth); border-color: rgba(79, 163, 199, 0.4); }
+.trait.perk { color: var(--good); border-color: rgba(95, 179, 107, 0.4); }
+.trait.quirk { color: var(--fair); border-color: rgba(217, 180, 74, 0.4); }
+.trait.bond { color: var(--gold); border-color: var(--gold-dim); text-transform: none; letter-spacing: 0; }
+.segmented { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--gold-dim); border-radius: var(--radius); overflow: hidden; margin: 0.25rem 0 0.4rem; }
+.segmented button { background: transparent; color: var(--muted); border: none; border-radius: 0; padding: 0.35rem 0.9rem; }
+.segmented button + button { border-left: 1px solid var(--gold-dim); }
+.segmented button.on { background: var(--gold); color: var(--bg); }
+.quote { font-style: italic; color: #c9bfae; border-left: 2px solid var(--gold-dim); padding-left: 0.6rem; margin: 0.4rem 0; }
+.bio { max-width: 70ch; color: #c9bfae; margin-bottom: 0.75rem; }
+.flags { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.4rem; }
+.dossier { margin: 0.75rem 0 0.25rem; padding: 0.75rem; border: 1px dashed var(--fair); border-radius: var(--radius); }
+.dossier h2 { margin-top: 0; }
+.captive { margin-bottom: 0.6rem; }
+.captive .actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem; }
+.events li { display: block; color: #c9bfae; }
+.codex article { margin-bottom: 1rem; }
+.codex h3 { margin: 0 0 0.2rem; font-size: 1.05rem; color: var(--text); }
+.codex article.locked h3 { color: var(--muted); }
+.toggle { display: inline-flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem; color: var(--muted); }
+.toggle input { accent-color: var(--gold); }
+.footer { max-width: 1280px; margin: 0 auto; padding: 0 1.25rem 2rem; display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; font-size: 0.85rem; color: var(--muted); }
+.footer a { color: var(--gold); }
+
 @media (max-width: 860px) {
   main { padding: 1rem; }
   .hq, .two-col { grid-template-columns: 1fr; }
   .top-actions { margin-left: 0; }
   .slot-head { grid-template-columns: 1fr auto; }
   .slot-name { grid-column: 1 / -1; }
+  .topbar { gap: 0.6rem 1rem; padding: 0.6rem 1rem; }
+  .top-actions button { padding: 0.25rem 0.55rem; font-size: 0.85rem; }
+  .picks { grid-template-columns: 1fr; }
 }

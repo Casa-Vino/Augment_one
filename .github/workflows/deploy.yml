@@ -20,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -27,6 +29,17 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      # Every release/vN branch stays playable at /vN/.
+      - name: Build archived versions
+        run: |
+          versions=()
+          for v in $(git for-each-ref --format='%(refname:lstrip=4)' 'refs/remotes/origin/release/' | sort -V); do
+            git worktree add "$RUNNER_TEMP/$v" "origin/release/$v"
+            (cd "$RUNNER_TEMP/$v" && npm ci --no-audit --no-fund && npx vite build --base ./ --outDir "$GITHUB_WORKSPACE/dist/$v" --emptyOutDir)
+            versions+=("\"$v\"")
+          done
+          (IFS=,; echo "[${versions[*]}]") > dist/versions.json
+          cat dist/versions.json
       - uses: actions/upload-pages-artifact@v3
         if: github.ref == 'refs/heads/main'
         with:

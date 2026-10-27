@@ -1,9 +1,11 @@
 // Resolves a mission phase by phase from a seed, and writes the debrief as it goes.
-// The same contract, squad and seed always produce the same result.
+// The same contract, squad, orders and seed always produce the same result.
 import { derive, drugLoad, loudestSource, malfunctionChance, topSource, type Derived } from './agent';
-import { MISSIONS } from './data';
+import { BOND_LEVELS, MISSIONS, NONLETHAL_PENALTY, RIVAL_SYNDICATE } from './data';
 import { createRng } from './rng';
-import type { Agent, AgentOutcome, Contract, Drugs, Limb, LogLine, MissionResult, PhaseTemplate } from './types';
+import type {
+  Agent, AgentOutcome, Contract, Drugs, Limb, LogLine, MissionResult, PhaseTemplate, RivalOrders, RulesOfEngagement,
+} from './types';
 
 export interface SquadMember {
   agent: Agent;
@@ -16,6 +18,10 @@ export interface MissionInput {
   squad: SquadMember[];
   toleranceBonus: number;
   seed: number;
+  rules?: RulesOfEngagement;
+  rivalOrders?: RivalOrders;
+  /** Missions together per pair of agents, keyed by bondKey(). */
+  bonds?: Record<string, number>;
 }
 
 interface Operative {
@@ -23,12 +29,17 @@ interface Operative {
   drugs: Drugs;
   dosed: boolean;
   d: Derived;
+  bondBonus: number;
   hp: number;
   energy: number;
   powered: boolean;
   downed: boolean;
   stunned: boolean;
+  /** Combat bonus after a bonded teammate goes down. */
+  rally: number;
   kills: number;
+  subdued: number;
+  hacks: number;
 }
 
 /** Difficulty classes for each kind of check, by mission difficulty (1-5). */
@@ -43,6 +54,36 @@ export const DC = {
 
 export function enemiesFor(phase: PhaseTemplate, diff: number, alarm: boolean): number {
   return 1 + diff + (phase.enemies ?? 0) + (alarm ? 1 : 0);
+}
+
+export function bondKey(a: string, b: string): string {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+
+/** 0 = none, 1 = Trusted, 2 = Inseparable. */
+export function bondLevel(missionsTogether: number): number {
+  return BOND_LEVELS.filter((n) => missionsTogether >= n).length;
+}
+
+export function bondBonusFor(agentId: string, squadIds: string[], bonds: Record<string, number> = {}): number {
+  const total = squadIds.filter((id) => id !== agentId).reduce((sum, id) => sum + bondLevel(bonds[bondKey(agentId, id)] ?? 0), 0);
+  return Math.min(3, total);
+}
+
+/** Phases for a contract: the template, plus a rival encounter before extraction. */
+export function missionPhases(contract: Contract): PhaseTemplate[] {
+  const phases = [...MISSIONS[contract.type].phases];
+  if (contract.rival) phases.splice(phases.length - 1, 0, { kind: 'rival', name: `Rival operative: “${contract.rival.codename}”` });
+  return phases;
+}
+
+export function rivalDefence(rival: Derived): number {
+  return 12 + rival.stats.speed / 2 + rival.stats.perception / 4 + rival.stats.armor / 2;
+}
+
+/** Hits needed to put a rival down. */
+export function rivalToughness(diff: number): number {
+  return diff >= 3 ? 3 : 2;
 }
 
 /** Team stealth: the weakest member matters most, and big squads are easier to spot. */
@@ -66,30 +107,48 @@ export function bestTech(ds: Derived[]): number {
   return Math.max(...ds.map((d) => d.stats.tech + d.stats.perception / 5));
 }
 
+export function attackPenalty(d: Derived, rules: RulesOfEngagement): number {
+  return rules === 'nonlethal' && !d.tags.has('nonlethal') ? NONLETHAL_PENALTY : 0;
+}
+
 export function resolveMission(input: MissionInput): MissionResult {
   const rng = createRng(input.seed);
   const { contract } = input;
+  const rules = input.rules ?? 'lethal';
   const diff = contract.difficulty;
   const template = MISSIONS[contract.type];
   const log: LogLine[] = [];
   const say = (text: string, tone: LogLine['tone'] = 'info') => log.push({ text, tone });
+  const lethal = rules === 'lethal';
+
+  const squadIds = input.squad.map((m) => m.agent.id);
+  const deriveFor = (m: { agent: Agent; drugs: Drugs }, bondBonus: number, poweredDown = false) =>
+    derive(m.agent, { drugs: m.drugs, toleranceBonus: input.toleranceBonus, squadSize: input.squad.length, rules, bondBonus, poweredDown });
 
   const ops: Operative[] = input.squad.map((m) => {
-    const d = derive(m.agent, { drugs: m.drugs, toleranceBonus: input.toleranceBonus });
-    return { agent: m.agent, drugs: m.drugs, dosed: m.dosed, d, hp: m.agent.hp, energy: d.energy, powered: true, downed: false, stunned: false, kills: 0 };
+    const bondBonus = bondBonusFor(m.agent.id, squadIds, input.bonds);
+    const d = deriveFor(m, bondBonus);
+    return {
+      agent: m.agent, drugs: m.drugs, dosed: m.dosed, d, bondBonus, hp: m.agent.hp, energy: d.energy, powered: true,
+      downed: false, stunned: false, rally: 0, kills: 0, subdued: 0, hacks: 0,
+    };
   });
   const standing = () => ops.filter((o) => !o.downed && !o.stunned);
   const powerDown = (o: Operative) => {
     o.powered = false;
-    o.d = derive(o.agent, { drugs: o.drugs, toleranceBonus: input.toleranceBonus, poweredDown: true });
+    o.d = deriveFor(o, o.bondBonus, true);
   };
 
   let alarm = false;
   let objectiveMet = false;
   let objectiveFailed = false;
+  let rivalOutcome: MissionResult['rivalOutcome'];
+  let rivalSubdued = false;
 
   say(`${template.label}: ${contract.target}, for ${contract.client}.`, 'header');
-  say(`Squad: ${ops.map((o) => o.agent.name).join(', ')}. Threat level ${diff}.`);
+  say(`Squad: ${ops.map((o) => o.agent.name).join(', ')}. Threat level ${diff}. ${lethal ? 'Lethal force authorised.' : 'Non-lethal: nobody dies today.'}`);
+  const bonded = ops.filter((o) => o.bondBonus > 0);
+  if (bonded.length >= 2) say(`${listNames(bonded.map((o) => o.agent.name))} have worked together before, and it shows.`, 'good');
 
   // --- Phase helpers -------------------------------------------------------
 
@@ -97,12 +156,12 @@ export function resolveMission(input: MissionInput): MissionResult {
     for (const o of ops) {
       o.stunned = false;
       if (o.downed) continue;
-      const cost = o.d.drain * (phase.kind === 'combat' ? 2 : 1);
+      const cost = o.d.drain * (phase.kind === 'combat' || phase.kind === 'rival' ? 2 : 1);
       if (o.powered && cost > 0) {
         if (o.energy < cost) {
           const names = o.d.active.filter((a) => a.drain > 0).map((a) => a.name.toLowerCase());
           powerDown(o);
-          say(`${o.agent.name} ran out of energy. ${listNames(names)} shut down.`, 'bad');
+          say(`${o.agent.name} ran out of energy. ${listNames(names, true)} shut down.`, 'bad');
         } else {
           o.energy -= cost;
         }
@@ -110,34 +169,58 @@ export function resolveMission(input: MissionInput): MissionResult {
       if (rng.chance(malfunctionChance(o.d, o.dosed))) {
         o.stunned = true;
         const aug = o.d.installed.length ? rng.pick(o.d.installed).name.toLowerCase() : 'an implant';
-        const cause = o.dosed ? 'despite the suppressant dose' : 'with no suppressant in their system';
+        const cause = o.dosed ? 'despite the Calyx dose' : 'with no Calyx in their system';
         say(`${o.agent.name} suffered a rejection episode ${cause}: their ${aug} seized up. Out of action this phase.`, 'bad');
       }
     }
   };
 
+  const hurt = (t: Operative, dmg: number, by: string) => {
+    t.hp -= dmg;
+    const armour = topSource(t.d, 'armor');
+    if (armour && t.d.stats.armor >= 6) say(`${t.agent.name}'s ${armour} absorbed most of ${by} (−${dmg} HP).`, 'info');
+    else say(`${t.agent.name} was hit by ${by} (−${dmg} HP).`, 'bad');
+    if (t.hp > 0) return;
+    t.hp = 0;
+    t.downed = true;
+    say(`${t.agent.name} is down.`, 'bad');
+    for (const o of standing()) {
+      if (o.rally || bondLevel(input.bonds?.[bondKey(o.agent.id, t.agent.id)] ?? 0) === 0) continue;
+      o.rally = 3;
+      say(`${o.agent.name} won't leave ${t.agent.name} behind (+3 combat for the rest of the mission).`, 'good');
+    }
+  };
+
+  const takedownLine = (o: Operative, hits: number) => {
+    const src = topSource(o.d, 'combat');
+    const how = src ? rng.pick([`with their ${src}`, `on the back of their ${src}`, `(${src})`]) : 'on raw skill';
+    const who = hits === 1 ? 'a guard' : `${hits} guards`;
+    if (lethal) say(`${o.agent.name} dropped ${who} ${how}.`, 'good');
+    else say(rng.pick([`${o.agent.name} put ${who} to sleep ${how}.`, `${o.agent.name} subdued ${who} ${how}.`, `${o.agent.name} zip-tied ${who} ${how}.`]), 'good');
+  };
+
   const fight = (enemies: number): boolean => {
-    let remaining = enemies;
-    say(`${enemies} ${enemies === 1 ? 'hostile' : 'hostiles'} engaged.`);
+    let remaining = Math.max(1, enemies);
+    say(`${remaining} ${remaining === 1 ? 'hostile' : 'hostiles'} engaged.`);
     for (let round = 0; round < 4 && remaining > 0; round++) {
-      const shooters = standing();
-      if (!shooters.length) break;
-      for (const o of shooters) {
+      const fighters = standing();
+      if (!fighters.length) break;
+      for (const o of fighters) {
         if (remaining <= 0) break;
         let hits = 0;
-        // Fast agents get a second shot per round.
-        const shots = o.d.stats.speed >= 18 ? 2 : 1;
-        for (let s = 0; s < shots && remaining > 0; s++) {
-          if (o.d.stats.combat + o.d.stats.perception / 3 + rng.roll() >= DC.shot(diff)) {
+        // Fast agents get a second attempt per round.
+        const tries = o.d.stats.speed >= 18 ? 2 : 1;
+        const dc = DC.shot(diff) + attackPenalty(o.d, rules);
+        for (let s = 0; s < tries && remaining > 0; s++) {
+          if (o.d.stats.combat + o.d.stats.perception / 3 + o.rally + rng.roll() >= dc) {
             remaining--;
             hits++;
           }
         }
         if (hits) {
-          o.kills += hits;
-          const src = topSource(o.d, 'combat');
-          const how = src ? rng.pick([`with their ${src}`, `on the back of their ${src}`, `(${src})`]) : 'on raw skill';
-          say(`${o.agent.name} dropped ${hits === 1 ? 'a guard' : `${hits} guards`} ${how}.`, 'good');
+          if (lethal) o.kills += hits;
+          else o.subdued += hits;
+          takedownLine(o, hits);
         }
       }
       for (let e = 0; e < remaining; e++) {
@@ -147,17 +230,7 @@ export function resolveMission(input: MissionInput): MissionResult {
         const t = rng.weighted(targets, (o) => 10 + Math.max(0, o.d.signature) * 2);
         const defence = 10 + t.d.stats.speed / 2 + t.d.stats.perception / 4;
         if (DC.enemyAttack(diff) + rng.roll() < defence) continue;
-        const raw = DC.enemyDamage(diff);
-        const dmg = Math.max(4, raw - t.d.stats.armor);
-        t.hp -= dmg;
-        const armour = topSource(t.d, 'armor');
-        if (armour && t.d.stats.armor >= 6) say(`${t.agent.name}'s ${armour} absorbed most of a burst (−${dmg} HP).`, 'info');
-        else say(`${t.agent.name} was hit (−${dmg} HP).`, 'bad');
-        if (t.hp <= 0) {
-          t.hp = 0;
-          t.downed = true;
-          say(`${t.agent.name} is down.`, 'bad');
-        }
+        hurt(t, Math.max(4, DC.enemyDamage(diff) - t.d.stats.armor), 'a burst');
       }
     }
     if (remaining > 0) say(`${remaining} ${remaining === 1 ? 'hostile' : 'hostiles'} still holding the position.`, 'bad');
@@ -170,10 +243,8 @@ export function resolveMission(input: MissionInput): MissionResult {
       return fight(enemiesFor({ ...phase, enemies: -1 }, diff, true));
     }
     const team = standing();
-    const ds = team.map((o) => o.d);
-    const value = teamStealth(ds);
-    const dc = DC.stealth(diff);
-    if (value + rng.roll() >= dc) {
+    const value = teamStealth(team.map((o) => o.d));
+    if (value + rng.roll() >= DC.stealth(diff)) {
       const best = team.reduce((a, b) => (b.d.stats.stealth > a.d.stats.stealth ? b : a));
       const src = topSource(best.d, 'stealth');
       say(
@@ -206,6 +277,7 @@ export function resolveMission(input: MissionInput): MissionResult {
     const src = topSource(hacker.d, 'tech');
     for (let attempt = 0; attempt < 2; attempt++) {
       if (value - attempt * 3 + rng.roll() >= dc) {
+        hacker.hacks++;
         say(`${hacker.agent.name} cracked it${src ? ` through their ${src}` : ' the hard way'}${attempt ? ' on a second attempt' : ''}.`, 'good');
         return true;
       }
@@ -218,14 +290,70 @@ export function resolveMission(input: MissionInput): MissionResult {
     return false;
   };
 
+  const confrontRival = (): boolean => {
+    const rival = contract.rival!;
+    const rd = derive(rival, {});
+    const tag = `“${rival.codename}”`;
+    let orders = input.rivalOrders ?? 'avoid';
+    say(`${rival.name} (${tag}) of ${RIVAL_SYNDICATE} is working the same building.`);
+
+    if (orders === 'avoid') {
+      if (teamStealth(standing().map((o) => o.d)) + rng.roll() >= DC.stealth(diff) - 2) {
+        rivalOutcome = 'avoided';
+        say(`The team let ${tag} pass and kept to their own job.`, 'good');
+        return true;
+      }
+      say(`${tag} spotted the team. There is no way round them now.`, 'bad');
+      orders = lethal ? 'eliminate' : 'capture';
+    }
+
+    const capture = orders === 'capture';
+    let toughness = rivalToughness(diff);
+    for (let round = 0; round < 3 && toughness > 0; round++) {
+      for (const o of standing()) {
+        if (toughness <= 0) break;
+        const penalty = capture ? attackPenalty(o.d, 'nonlethal') : 0;
+        if (o.d.stats.combat + o.d.stats.perception / 3 + o.rally + rng.roll() < rivalDefence(rd) + penalty) continue;
+        toughness--;
+        if (toughness > 0) {
+          say(`${o.agent.name} landed a hit on ${tag}.`, 'good');
+          continue;
+        }
+        if (capture) {
+          o.subdued++;
+          rivalSubdued = true;
+          rivalOutcome = 'captured';
+          say(`${o.agent.name} put ${tag} down without killing them. They will have to be carried out.`, 'good');
+        } else {
+          o.kills++;
+          rivalOutcome = 'killed';
+          say(`${o.agent.name} eliminated ${tag}. ${RIVAL_SYNDICATE} will notice the gap.`, 'good');
+        }
+      }
+      if (toughness <= 0) break;
+      const targets = standing();
+      if (!targets.length) break;
+      const t = rng.weighted(targets, (o) => 10 + Math.max(0, o.d.signature) * 2);
+      const defence = 10 + t.d.stats.speed / 2 + t.d.stats.perception / 4;
+      if (rd.stats.combat + rng.roll() >= defence) hurt(t, Math.max(4, 10 + 4 * diff - t.d.stats.armor), tag);
+      else say(`${tag} missed ${t.agent.name}.`);
+    }
+    if (toughness > 0) {
+      rivalOutcome = 'escaped';
+      say(`${tag} broke contact and slipped away.`, 'bad');
+    }
+    return true;
+  };
+
   const run = (phase: PhaseTemplate): boolean => {
     const team = standing();
-    const carried = ops.filter((o) => o.downed).length + (phase.carry ?? 0);
+    const carried = ops.filter((o) => o.downed).length + (phase.carry ?? 0) + (rivalSubdued ? 1 : 0);
     const value = teamSpeed(team.map((o) => o.d), carried);
     const dc = DC.speed(diff) + (alarm ? 4 : 0);
     if (carried) {
       const carrier = team.find((o) => o.d.tags.has('carry'));
-      say(carrier ? `${carrier.agent.name}'s strength frame took the weight of ${carried === 1 ? 'one body' : `${carried} bodies`}.` : `The team is carrying ${carried === 1 ? 'one body' : `${carried} bodies`} by hand.`);
+      const load = carried === 1 ? 'one body' : `${carried} bodies`;
+      say(carrier ? `${carrier.agent.name} took the weight of ${load}.` : `The team is carrying ${load} by hand.`);
     }
     if (value + rng.roll() >= dc) {
       const slowest = team.reduce((a, b) => (b.d.stats.speed < a.d.stats.speed ? b : a));
@@ -241,7 +369,7 @@ export function resolveMission(input: MissionInput): MissionResult {
 
   // --- Run the phases ------------------------------------------------------
 
-  for (const phase of template.phases) {
+  for (const phase of missionPhases(contract)) {
     say(phase.name, 'header');
     beginPhase(phase);
     if (!standing().length) {
@@ -249,20 +377,13 @@ export function resolveMission(input: MissionInput): MissionResult {
       if (phase.objective) objectiveFailed = true;
       continue;
     }
-    let ok: boolean;
+    let ok = false;
     switch (phase.kind) {
-      case 'stealth':
-        ok = sneak(phase);
-        break;
-      case 'combat':
-        ok = fight(enemiesFor(phase, diff, alarm));
-        break;
-      case 'hack':
-        ok = hack();
-        break;
-      case 'speed':
-        ok = run(phase);
-        break;
+      case 'stealth': ok = sneak(phase); break;
+      case 'combat': ok = fight(enemiesFor(phase, diff, alarm)); break;
+      case 'hack': ok = hack(); break;
+      case 'speed': ok = run(phase); break;
+      case 'rival': ok = confrontRival(); break;
     }
     if (phase.objective) {
       if (ok) objectiveMet = true;
@@ -275,8 +396,29 @@ export function resolveMission(input: MissionInput): MissionResult {
 
   say('Aftermath', 'header');
   const anyStanding = ops.some((o) => !o.downed);
+  // The one who did the heavy lifting: a natural carrier if there is one, else the toughest agent standing.
+  const carrying = ops.some((o) => o.downed) || rivalSubdued || template.phases.some((p) => p.carry);
+  const upright = ops.filter((o) => !o.downed);
+  const carrier = carrying && upright.length
+    ? upright.find((o) => o.d.tags.has('carry')) ?? upright.reduce((a, b) => (b.d.stats.armor + b.d.stats.combat > a.d.stats.armor + a.d.stats.combat ? b : a))
+    : undefined;
+
+  let captive: Agent | undefined;
+  if (rivalSubdued && contract.rival) {
+    if (anyStanding) {
+      captive = { ...structuredClone(contract.rival), hp: Math.max(20, Math.round(contract.rival.maxHp * 0.4)) };
+      say(`${contract.rival.name} is in the van, sedated and restrained.`, 'good');
+    } else {
+      rivalOutcome = 'escaped';
+      say(`With nobody left to carry them, “${contract.rival.codename}” woke up and walked away.`, 'bad');
+    }
+  }
+
   const outcomes: AgentOutcome[] = ops.map((o) => {
-    const out: AgentOutcome = { agentId: o.agent.id, hp: o.hp, downed: o.downed, kia: false, kills: o.kills, crash: 0, overdose: false };
+    const out: AgentOutcome = {
+      agentId: o.agent.id, hp: o.hp, downed: o.downed, kia: false, kills: o.kills, subdued: o.subdued, hacks: o.hacks,
+      carried: o === carrier, crash: 0, overdose: false,
+    };
     if (o.downed) {
       if (anyStanding || rng.chance(0.4)) {
         say(anyStanding ? `${o.agent.name} was carried out alive.` : `A corporate clean-up crew recovered ${o.agent.name}, barely alive.`);
@@ -307,20 +449,23 @@ export function resolveMission(input: MissionInput): MissionResult {
     return out;
   });
 
+  const kills = ops.reduce((sum, o) => sum + o.kills, 0);
+  const subdued = ops.reduce((sum, o) => sum + o.subdued, 0);
   const success = objectiveMet && !objectiveFailed;
   const compromised = success && alarm && contract.type === 'infiltration';
   const payout = success ? Math.round((compromised ? contract.payout * 0.5 : contract.payout) / 50) * 50 : 0;
-  const rp = success ? contract.difficulty + (alarm ? 0 : 1) : 0;
+  const cleanBonus = success && kills === 0 ? contract.cleanBonus ?? 0 : 0;
+  const rp = success ? contract.difficulty + (alarm ? 0 : 1) + (!lethal && kills === 0 ? 1 : 0) : 0;
 
   if (success) say(compromised ? 'Contract complete, but compromised: the client halved the fee.' : 'Contract complete.', 'good');
   else say('Contract failed. No payment.', 'bad');
+  if (success && kills === 0) say(cleanBonus ? `Nobody died. The client added a ¢${cleanBonus.toLocaleString('en-GB')} bonus for discretion.` : 'Nobody died.', 'good');
 
-  return { success, compromised, log, outcomes, payout, rp };
+  return { success, compromised, log, outcomes, payout, rp, alarm, kills, subdued, cleanBonus, rivalOutcome, captive };
 }
 
-function listNames(names: string[]): string {
-  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+function listNames(names: string[], capitalise = false): string {
+  const cap = (s: string) => (capitalise ? s.charAt(0).toUpperCase() + s.slice(1) : s);
   if (names.length <= 1) return cap(names[0] ?? 'Their implants');
   return cap(`${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`);
 }
-

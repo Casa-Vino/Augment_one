@@ -3,7 +3,7 @@
 import { createAgent } from '../src/sim/agent';
 import { MISSIONS } from '../src/sim/data';
 import { resolveMission } from '../src/sim/mission';
-import type { Agent, Drugs, MissionType, Slot } from '../src/sim/types';
+import type { Agent, Drugs, MissionType, RulesOfEngagement, Slot } from '../src/sim/types';
 
 const runs = Number(process.argv[2] ?? 400);
 
@@ -24,7 +24,11 @@ const sentinel = (n: string) => agent(n, { neural: 'sentinel-overclock', optics:
 const INT3: Drugs = { intelligence: 3, perception: 0, adrenaline: 0 };
 const ADR2: Drugs = { intelligence: 0, perception: 1, adrenaline: 2 };
 
-const TEAMS: Record<string, { squad: Agent[]; drugs?: Drugs }> = {
+// Non-lethal builds: arc gloves instead of guns.
+const pacifist = (n: string) => agent(n, { arms: 'arc-gloves', legs: 'silent-stride', skin: 'social-camo', neural: 'reflex-booster', optics: 'smart-targeting', torso: 'dermal-plating' });
+const pacifistGhost = (n: string) => agent(n, { arms: 'arc-gloves', legs: 'silent-stride', skin: 'glass-shield', neural: 'hack-interface', optics: 'thermal-optics', torso: 'energy-converter' });
+
+const TEAMS: Record<string, { squad: Agent[]; drugs?: Drugs; rules?: RulesOfEngagement }> = {
   'Unaugmented x4': { squad: ['A', 'B', 'C', 'D'].map((n) => agent(n, {})) },
   'Unaugmented x2': { squad: ['A', 'B'].map((n) => agent(n, {})) },
   'Ghost pair': { squad: [ghost('G1'), ghost('G2')] },
@@ -33,6 +37,9 @@ const TEAMS: Record<string, { squad: Agent[]; drugs?: Drugs }> = {
   'Haulers x3': { squad: [hauler('U1'), hauler('U2'), hauler('U3')] },
   'LATE ghost hackers x2': { squad: [ghostHacker('G1'), ghostHacker('G2')], drugs: INT3 },
   'LATE sentinels x4': { squad: ['S1', 'S2', 'S3', 'S4'].map(sentinel), drugs: ADR2 },
+  'NL: assault x4': { squad: ['S1', 'S2', 'S3', 'S4'].map(soldier), rules: 'nonlethal' },
+  'NL: pacifists x4': { squad: ['P1', 'P2', 'P3', 'P4'].map(pacifist), rules: 'nonlethal' },
+  'NL: pacifist ghosts x2': { squad: [pacifistGhost('G1'), pacifistGhost('G2')], rules: 'nonlethal' },
 };
 
 const types = Object.keys(MISSIONS) as MissionType[];
@@ -41,7 +48,7 @@ const diffs = [1, 2, 3, 5];
 const header = ['Team'.padEnd(22), ...types.flatMap((t) => diffs.map((d) => `${t.slice(0, 5)}${d}`.padStart(8)))].join('');
 console.log(`Success rate over ${runs} runs (KIA per run in brackets for the hardest level)\n`);
 console.log(header);
-for (const [name, { squad, drugs }] of Object.entries(TEAMS)) {
+for (const [name, { squad, drugs, rules }] of Object.entries(TEAMS)) {
   const cells: string[] = [];
   for (const type of types) {
     for (const difficulty of diffs) {
@@ -52,6 +59,7 @@ for (const [name, { squad, drugs }] of Object.entries(TEAMS)) {
           contract: { id: 'x', type, difficulty, client: 'X', target: 'Y', payout: 1000 },
           squad: squad.map((a) => ({ agent: a, drugs: drugs ?? NONE, dosed: true })),
           toleranceBonus: 0,
+          rules,
           seed: seed * 7919 + difficulty,
         });
         if (result.success) wins++;

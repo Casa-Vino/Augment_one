@@ -38,6 +38,16 @@ export interface Drugs {
   adrenaline: number;
 }
 
+export interface AgentRecord {
+  /** Missions finished without an alarm. */
+  quietMissions: number;
+  hacks: number;
+  subdued: number;
+  carries: number;
+  overTolerance: number;
+  timesDowned: number;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -49,10 +59,38 @@ export interface Agent {
   kills: number;
   history: string[];
   status: 'active' | 'kia';
+  /** Trait ids: one personality from the start, plus perks and quirks earned in the field. */
+  traits: string[];
+  record: AgentRecord;
+  origin: 'founder' | 'recruit' | 'captive';
+  /** Codename, for rival operatives. */
+  codename?: string;
 }
 
+export interface Trait {
+  id: string;
+  name: string;
+  kind: 'personality' | 'perk' | 'quirk';
+  desc: string;
+  /** How a perk or quirk is earned, shown in the codex and on the agent screen. */
+  how?: string;
+  stats?: Partial<Stats>;
+  /** Extra stats in squads of one or two. */
+  smallSquad?: Partial<Stats>;
+  /** Extra stats in squads of three or four. */
+  bigSquad?: Partial<Stats>;
+  /** Extra stats when the mission is non-lethal. */
+  nonLethal?: Partial<Stats>;
+  tolerance?: number;
+  maxHp?: number;
+  tags?: string[];
+}
+
+export type RulesOfEngagement = 'lethal' | 'nonlethal';
+export type RivalOrders = 'avoid' | 'capture' | 'eliminate';
+
 export type MissionType = 'infiltration' | 'assassination' | 'heist' | 'extraction';
-export type PhaseKind = 'stealth' | 'combat' | 'hack' | 'speed';
+export type PhaseKind = 'stealth' | 'combat' | 'hack' | 'speed' | 'rival';
 
 export interface PhaseTemplate {
   kind: PhaseKind;
@@ -71,6 +109,10 @@ export interface Contract {
   client: string;
   target: string;
   payout: number;
+  /** A rival syndicate operative is working the same site. */
+  rival?: Agent;
+  /** The client pays this bonus if nobody is killed. */
+  cleanBonus?: number;
 }
 
 export interface LogLine {
@@ -85,6 +127,10 @@ export interface AgentOutcome {
   kia: boolean;
   lostLimb?: Limb;
   kills: number;
+  subdued: number;
+  hacks: number;
+  /** Was standing at extraction while carrying a downed teammate, VIP or captive. */
+  carried: boolean;
   crash: number;
   overdose: boolean;
 }
@@ -96,4 +142,12 @@ export interface MissionResult {
   outcomes: AgentOutcome[];
   payout: number;
   rp: number;
+  alarm: boolean;
+  kills: number;
+  subdued: number;
+  /** Paid on top of the fee because nobody died. */
+  cleanBonus: number;
+  rivalOutcome?: 'avoided' | 'captured' | 'killed' | 'escaped';
+  /** The rival operative, if the team brought them home. */
+  captive?: Agent;
 }

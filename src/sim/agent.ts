@@ -1,5 +1,5 @@
-import { AUGMENT_BY_ID, BASE_ENERGY, BASE_HP, BASE_STATS, BASE_TOLERANCE, SLOTS, SYNERGIES } from './data';
-import type { Agent, Augment, Drugs, Limb, Stat, Stats, Synergy } from './types';
+import { AUGMENT_BY_ID, BASE_ENERGY, BASE_HP, BASE_STATS, BASE_TOLERANCE, SLOTS, SYNERGIES, TRAIT_BY_ID } from './data';
+import type { Agent, AgentRecord, Augment, Drugs, Limb, RulesOfEngagement, Stat, Stats, Synergy, Trait } from './types';
 
 export const NO_DRUGS: Drugs = { intelligence: 0, perception: 0, adrenaline: 0 };
 
@@ -13,6 +13,11 @@ export interface DeriveOptions {
   /** True once the agent's energy has run out: powered augments stop working. */
   poweredDown?: boolean;
   toleranceBonus?: number;
+  /** Squad size, for traits that care about company. */
+  squadSize?: number;
+  rules?: RulesOfEngagement;
+  /** Combat and stealth bonus from trusted teammates in the same squad. */
+  bondBonus?: number;
 }
 
 export interface Derived {
@@ -27,10 +32,20 @@ export interface Derived {
   installed: Augment[];
   active: Augment[];
   synergies: Synergy[];
+  traits: Trait[];
 }
 
-export function createAgent(id: string, name: string): Agent {
-  return { id, name, hp: BASE_HP, maxHp: BASE_HP, augments: {}, missingLimbs: [], missions: 0, kills: 0, history: [], status: 'active' };
+export const EMPTY_RECORD: AgentRecord = { quietMissions: 0, hacks: 0, subdued: 0, carries: 0, overTolerance: 0, timesDowned: 0 };
+
+export function createAgent(id: string, name: string, personality?: string, origin: Agent['origin'] = 'founder'): Agent {
+  return {
+    id, name, hp: BASE_HP, maxHp: BASE_HP, augments: {}, missingLimbs: [], missions: 0, kills: 0, history: [], status: 'active',
+    traits: personality ? [personality] : [], record: { ...EMPTY_RECORD }, origin,
+  };
+}
+
+export function agentTraits(agent: Agent): Trait[] {
+  return (agent.traits ?? []).map((id) => TRAIT_BY_ID.get(id)).filter((t): t is Trait => !!t);
 }
 
 export function installedAugments(agent: Agent): Augment[] {
@@ -73,6 +88,18 @@ export function derive(agent: Agent, opts: DeriveOptions = {}): Derived {
     if (!agent.augments[limb]) addStats(stats, LIMB_PENALTIES[limb]);
   }
 
+  const traits = agentTraits(agent);
+  let tolerance = BASE_TOLERANCE + (opts.toleranceBonus ?? 0);
+  for (const t of traits) {
+    if (t.stats) addStats(stats, t.stats);
+    if (opts.squadSize && opts.squadSize <= 2 && t.smallSquad) addStats(stats, t.smallSquad);
+    if (opts.squadSize && opts.squadSize >= 3 && t.bigSquad) addStats(stats, t.bigSquad);
+    if (opts.rules === 'nonlethal' && t.nonLethal) addStats(stats, t.nonLethal);
+    tolerance += t.tolerance ?? 0;
+    t.tags?.forEach((tag) => tags.add(tag));
+  }
+  if (opts.bondBonus) addStats(stats, { combat: opts.bondBonus, stealth: opts.bondBonus });
+
   const drugs = opts.drugs ?? NO_DRUGS;
   stats.tech += drugs.intelligence * 2;
   stats.perception += drugs.perception * 2;
@@ -88,12 +115,13 @@ export function derive(agent: Agent, opts: DeriveOptions = {}): Derived {
     energy,
     drain,
     load,
-    tolerance: BASE_TOLERANCE + (opts.toleranceBonus ?? 0),
+    tolerance,
     signature,
     tags,
     installed,
     active,
     synergies,
+    traits,
   };
 }
 
@@ -111,8 +139,8 @@ export function needsDose(d: Derived): boolean {
 /** The augment or synergy contributing most to a stat, for debrief attribution. */
 export function topSource(d: Derived, stat: Stat): string | null {
   let best: { name: string; value: number } | null = null;
-  for (const src of [...d.active, ...d.synergies]) {
-    const value = src.stats[stat] ?? 0;
+  for (const src of [...d.active, ...d.synergies, ...d.traits]) {
+    const value = src.stats?.[stat] ?? 0;
     if (value > 0 && (!best || value > best.value)) best = { name: src.name, value };
   }
   return best ? best.name.toLowerCase() : null;

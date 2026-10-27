@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createAgent, derive, malfunctionChance } from '../src/sim/agent';
-import { deploy, installAugment, newCampaign, rest, startResearch } from '../src/sim/campaign';
+import { deploy, installAugment, migrate, newCampaign, offerPlace, rest, startResearch } from '../src/sim/campaign';
 import { resolveMission } from '../src/sim/mission';
 import { createRng } from '../src/sim/rng';
 import type { Agent, Contract } from '../src/sim/types';
@@ -102,5 +102,63 @@ describe('campaign', () => {
     const r = rest(s);
     expect(r.ok && r.state.roster[0].hp).toBe(80);
     expect(r.ok && r.state.money).toBe(s.money - 4 * 150);
+  });
+});
+
+describe('v2: team, orders and captives', () => {
+  const combat: Contract = { id: 'k', type: 'assassination', difficulty: 1, client: 'X', target: 'Y', payout: 2000 };
+
+  it('non-lethal missions never kill anyone', () => {
+    const squad = ['a', 'b', 'c'].map((id) => ({ agent: { ...withAugs({ arms: 'arc-gloves' }), id }, drugs: NONE, dosed: false }));
+    for (let seed = 0; seed < 40; seed++) {
+      const r = resolveMission({ contract: combat, squad, toleranceBonus: 0, seed, rules: 'nonlethal' });
+      expect(r.kills).toBe(0);
+    }
+  });
+
+  it('applies personality traits by squad size', () => {
+    const wolf = { ...withAugs({}), traits: ['lone-wolf'] };
+    expect(derive(wolf, { squadSize: 1 }).stats.stealth).toBe(12);
+    expect(derive(wolf, { squadSize: 4 }).stats.stealth).toBe(9);
+  });
+
+  it('forms bonds and awards traits after missions', () => {
+    let s = newCampaign(11);
+    const pair = s.roster.slice(0, 2).map((a) => ({ agentId: a.id, drugs: NONE, dosed: false }));
+    for (let i = 0; i < 2; i++) {
+      const r = deploy(s, s.contracts[0].id, pair);
+      if (!r.ok) throw new Error(r.error);
+      s = r.state;
+    }
+    const alive = pair.filter((p) => s.roster.find((a) => a.id === p.agentId)!.status === 'active');
+    if (alive.length === 2) expect(s.bonds[`${pair[0].agentId}|${pair[1].agentId}`]).toBe(2);
+    expect(s.history.every((h) => Array.isArray(h.events))).toBe(true);
+  });
+
+  it('turns a captive into an agent who keeps their augments', () => {
+    const s = newCampaign(5);
+    const prisoner = { ...withAugs({ skin: 'glass-shield' }), id: 'r9', name: 'Ilse Varga', codename: 'Wren', origin: 'captive' as const };
+    s.captives.push({ agent: prisoner, since: 1 });
+    s.standing = 10;
+    const { outcome, accepted } = offerPlace(s, 'r9');
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    if (accepted) {
+      const joined = outcome.state.roster.at(-1)!;
+      expect(joined.name).toBe('Ilse Varga');
+      expect(joined.augments.skin).toBe('glass-shield');
+    } else {
+      expect(offerPlace(outcome.state, 'r9').outcome.ok).toBe(false);
+    }
+  });
+
+  it('migrates a v1 save', () => {
+    const v1 = { ...newCampaign(2), version: 1 } as Record<string, unknown>;
+    for (const key of ['standing', 'bonds', 'captives', 'codex', 'settings']) delete v1[key];
+    (v1.roster as Agent[]).forEach((a) => { delete (a as Partial<Agent>).traits; delete (a as Partial<Agent>).record; });
+    const s = migrate(v1)!;
+    expect(s.version).toBe(2);
+    expect(s.roster.every((a) => a.traits.length === 1)).toBe(true);
+    expect(s.captives).toEqual([]);
   });
 });

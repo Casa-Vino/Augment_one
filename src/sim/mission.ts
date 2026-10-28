@@ -4,7 +4,7 @@ import { derive, drugLoad, loudestSource, malfunctionChance, topSource, type Der
 import { BOND_LEVELS, MISSIONS, NONLETHAL_PENALTY, RIVAL_SYNDICATE } from './data';
 import { createRng } from './rng';
 import type {
-  Agent, AgentOutcome, Contract, Drugs, Limb, LogLine, MissionResult, PhaseTemplate, RivalOrders, RulesOfEngagement,
+  Agent, AgentOutcome, Contract, Drugs, Limb, LogLine, MissionResult, PhaseTemplate, ReplayEvent, RivalOrders, RulesOfEngagement,
 } from './types';
 
 export interface SquadMember {
@@ -118,7 +118,7 @@ export function resolveMission(input: MissionInput): MissionResult {
   const diff = contract.difficulty;
   const template = MISSIONS[contract.type];
   const log: LogLine[] = [];
-  const say = (text: string, tone: LogLine['tone'] = 'info') => log.push({ text, tone });
+  const say = (text: string, tone: LogLine['tone'] = 'info', ev?: ReplayEvent) => log.push(ev ? { text, tone, ev } : { text, tone });
   const lethal = rules === 'lethal';
 
   const squadIds = input.squad.map((m) => m.agent.id);
@@ -161,7 +161,7 @@ export function resolveMission(input: MissionInput): MissionResult {
         if (o.energy < cost) {
           const names = o.d.active.filter((a) => a.drain > 0).map((a) => a.name.toLowerCase());
           powerDown(o);
-          say(`${o.agent.name} ran out of energy. ${listNames(names, true)} shut down.`, 'bad');
+          say(`${o.agent.name} ran out of energy. ${listNames(names, true)} shut down.`, 'bad', { kind: 'power', agent: o.agent.id });
         } else {
           o.energy -= cost;
         }
@@ -170,7 +170,7 @@ export function resolveMission(input: MissionInput): MissionResult {
         o.stunned = true;
         const aug = o.d.installed.length ? rng.pick(o.d.installed).name.toLowerCase() : 'an implant';
         const cause = o.dosed ? 'despite the Calyx dose' : 'with no Calyx in their system';
-        say(`${o.agent.name} suffered a rejection episode ${cause}: their ${aug} seized up. Out of action this phase.`, 'bad');
+        say(`${o.agent.name} suffered a rejection episode ${cause}: their ${aug} seized up. Out of action this phase.`, 'bad', { kind: 'stunned', agent: o.agent.id });
       }
     }
   };
@@ -178,12 +178,12 @@ export function resolveMission(input: MissionInput): MissionResult {
   const hurt = (t: Operative, dmg: number, by: string) => {
     t.hp -= dmg;
     const armour = topSource(t.d, 'armor');
-    if (armour && t.d.stats.armor >= 6) say(`${t.agent.name}'s ${armour} absorbed most of ${by} (−${dmg} HP).`, 'info');
-    else say(`${t.agent.name} was hit by ${by} (−${dmg} HP).`, 'bad');
+    if (armour && t.d.stats.armor >= 6) say(`${t.agent.name}'s ${armour} absorbed most of ${by} (−${dmg} HP).`, 'info', { kind: 'hit', agent: t.agent.id });
+    else say(`${t.agent.name} was hit by ${by} (−${dmg} HP).`, 'bad', { kind: 'hit', agent: t.agent.id });
     if (t.hp > 0) return;
     t.hp = 0;
     t.downed = true;
-    say(`${t.agent.name} is down.`, 'bad');
+    say(`${t.agent.name} is down.`, 'bad', { kind: 'down', agent: t.agent.id });
     for (const o of standing()) {
       if (o.rally || bondLevel(input.bonds?.[bondKey(o.agent.id, t.agent.id)] ?? 0) === 0) continue;
       o.rally = 3;
@@ -195,13 +195,14 @@ export function resolveMission(input: MissionInput): MissionResult {
     const src = topSource(o.d, 'combat');
     const how = src ? rng.pick([`with their ${src}`, `on the back of their ${src}`, `(${src})`]) : 'on raw skill';
     const who = hits === 1 ? 'a guard' : `${hits} guards`;
-    if (lethal) say(`${o.agent.name} dropped ${who} ${how}.`, 'good');
-    else say(rng.pick([`${o.agent.name} put ${who} to sleep ${how}.`, `${o.agent.name} subdued ${who} ${how}.`, `${o.agent.name} zip-tied ${who} ${how}.`]), 'good');
+    const ev: ReplayEvent = { kind: 'takedown', agent: o.agent.id, count: hits, lethal };
+    if (lethal) say(`${o.agent.name} dropped ${who} ${how}.`, 'good', ev);
+    else say(rng.pick([`${o.agent.name} put ${who} to sleep ${how}.`, `${o.agent.name} subdued ${who} ${how}.`, `${o.agent.name} zip-tied ${who} ${how}.`]), 'good', ev);
   };
 
   const fight = (enemies: number): boolean => {
     let remaining = Math.max(1, enemies);
-    say(`${remaining} ${remaining === 1 ? 'hostile' : 'hostiles'} engaged.`);
+    say(`${remaining} ${remaining === 1 ? 'hostile' : 'hostiles'} engaged.`, 'info', { kind: 'engage', count: remaining });
     for (let round = 0; round < 4 && remaining > 0; round++) {
       const fighters = standing();
       if (!fighters.length) break;
@@ -256,15 +257,17 @@ export function resolveMission(input: MissionInput): MissionResult {
             ])
           : rng.pick(['The team slipped through unseen.', 'A quiet approach. Nobody looked twice.', 'The guards were watching the wrong door.']),
         'good',
+        { kind: 'sneak', agent: best.agent.id },
       );
       return true;
     }
     alarm = true;
     const worst = team.reduce((a, b) => (b.d.signature > a.d.signature ? b : a));
     const loud = loudestSource(worst.d);
-    if (loud) say(`A patrol picked up ${worst.agent.name}: their ${loud} gave them away. Alarm raised.`, 'bad');
-    else if (team.length > 2) say(`A patrol spotted the squad; ${team.length} agents is a lot of bodies to hide. Alarm raised.`, 'bad');
-    else say(`A camera caught ${worst.agent.name} on a blind corner. Alarm raised.`, 'bad');
+    const alarmEv: ReplayEvent = { kind: 'alarm', agent: worst.agent.id };
+    if (loud) say(`A patrol picked up ${worst.agent.name}: their ${loud} gave them away. Alarm raised.`, 'bad', alarmEv);
+    else if (team.length > 2) say(`A patrol spotted the squad; ${team.length} agents is a lot of bodies to hide. Alarm raised.`, 'bad', alarmEv);
+    else say(`A camera caught ${worst.agent.name} on a blind corner. Alarm raised.`, 'bad', alarmEv);
     fight(enemiesFor({ ...phase, enemies: -2 }, diff, false));
     return false;
   };
@@ -278,13 +281,13 @@ export function resolveMission(input: MissionInput): MissionResult {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (value - attempt * 3 + rng.roll() >= dc) {
         hacker.hacks++;
-        say(`${hacker.agent.name} cracked it${src ? ` through their ${src}` : ' the hard way'}${attempt ? ' on a second attempt' : ''}.`, 'good');
+        say(`${hacker.agent.name} cracked it${src ? ` through their ${src}` : ' the hard way'}${attempt ? ' on a second attempt' : ''}.`, 'good', { kind: 'hack', agent: hacker.agent.id, ok: true });
         return true;
       }
-      say(attempt === 0 ? `${hacker.agent.name}'s first attempt bounced off the ICE.` : `${hacker.agent.name} was locked out.`, 'bad');
+      say(attempt === 0 ? `${hacker.agent.name}'s first attempt bounced off the ICE.` : `${hacker.agent.name} was locked out.`, 'bad', { kind: 'hack', agent: hacker.agent.id, ok: false });
       if (!alarm && rng.chance(0.5)) {
         alarm = true;
-        say('The failed intrusion tripped a security trace. Alarm raised.', 'bad');
+        say('The failed intrusion tripped a security trace. Alarm raised.', 'bad', { kind: 'alarm' });
       }
     }
     return false;
@@ -295,12 +298,12 @@ export function resolveMission(input: MissionInput): MissionResult {
     const rd = derive(rival, {});
     const tag = `“${rival.codename}”`;
     let orders = input.rivalOrders ?? 'avoid';
-    say(`${rival.name} (${tag}) of ${RIVAL_SYNDICATE} is working the same building.`);
+    say(`${rival.name} (${tag}) of ${RIVAL_SYNDICATE} is working the same building.`, 'info', { kind: 'rival', event: 'appears' });
 
     if (orders === 'avoid') {
       if (teamStealth(standing().map((o) => o.d)) + rng.roll() >= DC.stealth(diff) - 2) {
         rivalOutcome = 'avoided';
-        say(`The team let ${tag} pass and kept to their own job.`, 'good');
+        say(`The team let ${tag} pass and kept to their own job.`, 'good', { kind: 'rival', event: 'avoided' });
         return true;
       }
       say(`${tag} spotted the team. There is no way round them now.`, 'bad');
@@ -316,18 +319,18 @@ export function resolveMission(input: MissionInput): MissionResult {
         if (o.d.stats.combat + o.d.stats.perception / 3 + o.rally + rng.roll() < rivalDefence(rd) + penalty) continue;
         toughness--;
         if (toughness > 0) {
-          say(`${o.agent.name} landed a hit on ${tag}.`, 'good');
+          say(`${o.agent.name} landed a hit on ${tag}.`, 'good', { kind: 'rival', event: 'hit', agent: o.agent.id });
           continue;
         }
         if (capture) {
           o.subdued++;
           rivalSubdued = true;
           rivalOutcome = 'captured';
-          say(`${o.agent.name} put ${tag} down without killing them. They will have to be carried out.`, 'good');
+          say(`${o.agent.name} put ${tag} down without killing them. They will have to be carried out.`, 'good', { kind: 'rival', event: 'captured', agent: o.agent.id });
         } else {
           o.kills++;
           rivalOutcome = 'killed';
-          say(`${o.agent.name} eliminated ${tag}. ${RIVAL_SYNDICATE} will notice the gap.`, 'good');
+          say(`${o.agent.name} eliminated ${tag}. ${RIVAL_SYNDICATE} will notice the gap.`, 'good', { kind: 'rival', event: 'killed', agent: o.agent.id });
         }
       }
       if (toughness <= 0) break;
@@ -340,7 +343,7 @@ export function resolveMission(input: MissionInput): MissionResult {
     }
     if (toughness > 0) {
       rivalOutcome = 'escaped';
-      say(`${tag} broke contact and slipped away.`, 'bad');
+      say(`${tag} broke contact and slipped away.`, 'bad', { kind: 'rival', event: 'escaped' });
     }
     return true;
   };
@@ -358,19 +361,19 @@ export function resolveMission(input: MissionInput): MissionResult {
     if (value + rng.roll() >= dc) {
       const slowest = team.reduce((a, b) => (b.d.stats.speed < a.d.stats.speed ? b : a));
       const src = topSource(slowest.d, 'speed');
-      say(src && team.length === 1 ? `${slowest.agent.name} made the exfil point, ${src} pushing hard.` : 'Clean exfil. The team made the pickup on time.', 'good');
+      say(src && team.length === 1 ? `${slowest.agent.name} made the exfil point, ${src} pushing hard.` : 'Clean exfil. The team made the pickup on time.', 'good', { kind: 'exfil', ok: true });
       return true;
     }
     const slowest = team.reduce((a, b) => (b.d.stats.speed < a.d.stats.speed ? b : a));
-    say(`${slowest.agent.name} couldn't keep pace. Security caught up before the pickup.`, 'bad');
+    say(`${slowest.agent.name} couldn't keep pace. Security caught up before the pickup.`, 'bad', { kind: 'exfil', ok: false });
     fight(enemiesFor({ ...phase, enemies: -1 }, diff, alarm));
     return false;
   };
 
   // --- Run the phases ------------------------------------------------------
 
-  for (const phase of missionPhases(contract)) {
-    say(phase.name, 'header');
+  for (const [index, phase] of missionPhases(contract).entries()) {
+    say(phase.name, 'header', { kind: 'phase', index, phase: phase.kind });
     beginPhase(phase);
     if (!standing().length) {
       say(ops.every((o) => o.downed) ? 'Nobody is left standing.' : 'Nobody is able to act.', 'bad');
@@ -394,7 +397,7 @@ export function resolveMission(input: MissionInput): MissionResult {
 
   // --- Aftermath -----------------------------------------------------------
 
-  say('Aftermath', 'header');
+  say('Aftermath', 'header', { kind: 'aftermath' });
   const anyStanding = ops.some((o) => !o.downed);
   // The one who did the heavy lifting: a natural carrier if there is one, else the toughest agent standing.
   const carrying = ops.some((o) => o.downed) || rivalSubdued || template.phases.some((p) => p.carry);

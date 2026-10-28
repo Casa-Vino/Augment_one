@@ -3,7 +3,8 @@
 import { agentTraits, createAgent, derive, EMPTY_RECORD, needsDose } from './agent';
 import {
   AGENT_NAMES, AUGMENTS, AUGMENT_BY_ID, CAMPAIGN_LENGTH, CLEAN_BONUS_RATE, CLIENTS, HEAL_PER_TURN, MAX_CAPTIVES, MAX_ROSTER, MAX_SQUAD,
-  MISSIONS, PERSONALITIES, PRICES, RESEARCH, RIVAL_CODENAMES, RIVAL_NAMES, RIVAL_SYNDICATE, SLOTS, TARGET_SITES, TRAIT_BY_ID,
+  CONTROL_AT, LOSE_CONTROL_BELOW, MISSIONS, PERSONALITIES, PRICES, REGIONS, REGION_BY_ID, RESEARCH, RIVAL_CODENAMES, RIVAL_NAMES, RIVAL_SYNDICATE, SLOTS,
+  TARGET_SITES, TRAIT_BY_ID,
 } from './data';
 import { CLIENT_CODEX } from './lore';
 import { bondKey, bondLevel, resolveMission } from './mission';
@@ -29,8 +30,14 @@ export interface Captive {
   lastAttempt?: number;
 }
 
+export interface Sleeper {
+  agentId: string;
+  regionId: string;
+  since: number;
+}
+
 export interface CampaignState {
-  version: 2;
+  version: 3;
   seed: number;
   turn: number;
   money: number;
@@ -46,6 +53,15 @@ export interface CampaignState {
   captives: Captive[];
   codex: string[];
   settings: { lore: boolean };
+  /** Influence per district, 0-100. */
+  influence: Record<string, number>;
+  /** Districts you control and collect income from. */
+  owned: string[];
+  sleepers: Sleeper[];
+  /** What happened overnight: income, sleeper reports. Shown at HQ. */
+  news: string[];
+  /** Turn of the last Calyx run; one run per turn. */
+  calyxTurn: number;
 }
 
 export interface SquadOrder {
@@ -70,7 +86,7 @@ export function newCampaign(seed: number): CampaignState {
   const names = rng.shuffle(AGENT_NAMES);
   const personalities = rng.shuffle(PERSONALITIES);
   const state: CampaignState = {
-    version: 2,
+    version: 3,
     seed,
     turn: 1,
     money: 6000,
@@ -85,16 +101,26 @@ export function newCampaign(seed: number): CampaignState {
     captives: [],
     codex: [],
     settings: { lore: true },
+    influence: {},
+    owned: [],
+    sleepers: [],
+    news: [],
+    calyxTurn: 0,
   };
   state.contracts = generateContracts(state);
   return state;
 }
 
-/** Upgrades a v1 save in place: new fields get defaults, agents get a personality. */
+/** Upgrades an older save: new fields get defaults, agents get a personality, contracts get districts. */
 export function migrate(saved: unknown): CampaignState | null {
   const s = saved as Partial<CampaignState> & { version?: number };
   if (!s || typeof s !== 'object') return null;
-  if (s.version === 2) return s as CampaignState;
+  if (s.version === 3) return s as CampaignState;
+  if (s.version === 2) {
+    const v3: CampaignState = { ...(s as CampaignState), version: 3, influence: {}, owned: [], sleepers: [], news: [], calyxTurn: 0 };
+    v3.contracts = generateContracts(v3);
+    return v3;
+  }
   if (s.version !== 1) return null;
   const rng = createRng(hashSeed(s.seed ?? 0, 'migrate'));
   const roster = (s.roster ?? []).map((a) => ({
@@ -109,7 +135,7 @@ export function migrate(saved: unknown): CampaignState | null {
     events: h.events ?? [],
     result: Object.assign({ alarm: false, kills: 0, subdued: 0, cleanBonus: 0 }, h.result),
   })) as DebriefRecord[];
-  return { ...(s as CampaignState), version: 2, roster, history, standing: 0, bonds: {}, captives: [], codex: [], settings: { lore: true } };
+  return migrate({ ...(s as CampaignState), version: 2, roster, history, standing: 0, bonds: {}, captives: [], codex: [], settings: { lore: true } });
 }
 
 function makeRival(rng: Rng, id: string, difficulty: number): Agent {
@@ -124,16 +150,21 @@ function makeRival(rng: Rng, id: string, difficulty: number): Agent {
   return agent;
 }
 
+/** Four contracts a turn, each in a different district of the city map. */
 export function generateContracts(state: CampaignState): Contract[] {
   const rng = createRng(hashSeed(state.seed, 'contracts', state.turn));
-  const types = rng.shuffle(Object.keys(MISSIONS) as MissionType[]).slice(0, 3);
-  const base = 1 + Math.floor((state.turn - 1) * 0.45);
-  const rivalChance = Math.min(0.45, 0.1 + state.turn * 0.04);
-  return types.map((type, i) => {
-    const difficulty = Math.max(1, Math.min(5, base + rng.int(-1, 1)));
+  const types = Object.keys(MISSIONS) as MissionType[];
+  const regions = rng.shuffle(REGIONS).slice(0, 4);
+  const base = 1 + Math.floor((state.turn - 1) * 0.4);
+  return regions.map((region, i) => {
+    const type = rng.pick(types);
+    const difficulty = Math.max(1, Math.min(5, base + region.offset + rng.int(-1, 0)));
     const payout = Math.round(((1100 + 900 * difficulty) * MISSIONS[type].payoutMult) / 50) * 50;
-    const contract: Contract = { id: `t${state.turn}c${i}`, type, difficulty, client: rng.pick(CLIENTS), target: rng.pick(TARGET_SITES), payout };
+    const contract: Contract = {
+      id: `t${state.turn}c${i}`, type, difficulty, client: rng.pick(CLIENTS), target: `${rng.pick(TARGET_SITES)} in ${region.name}`, payout, regionId: region.id,
+    };
     if (rng.chance(0.4)) contract.cleanBonus = Math.round((payout * CLEAN_BONUS_RATE) / 50) * 50;
+    const rivalChance = Math.min(0.6, 0.08 + state.turn * 0.04 + (region.lantern ? 0.15 : 0));
     if (state.turn > 1 && rng.chance(rivalChance)) contract.rival = makeRival(rng, `r${state.turn}${i}`, difficulty);
     return contract;
   });
@@ -237,7 +268,74 @@ export function missionSeed(state: CampaignState, contractId: string): number {
 }
 
 export function weeklyCosts(state: CampaignState): number {
-  return livingAgents(state).length * PRICES.upkeepPerAgent + state.captives.length * PRICES.holdingPerCaptive;
+  const paid = state.roster.filter((a) => a.status === 'active' || a.status === 'sleeper').length;
+  return paid * PRICES.upkeepPerAgent + state.captives.length * PRICES.holdingPerCaptive;
+}
+
+export function districtIncome(state: CampaignState): number {
+  return state.owned.reduce((sum, id) => sum + (REGION_BY_ID.get(id)?.income ?? 0), 0);
+}
+
+function shiftInfluence(s: CampaignState, regionId: string, delta: number, news: string[]) {
+  const region = REGION_BY_ID.get(regionId);
+  if (!region) return;
+  const value = Math.max(0, Math.min(CONTROL_AT, (s.influence[regionId] ?? 0) + delta));
+  s.influence[regionId] = value;
+  const owned = s.owned.includes(regionId);
+  if (!owned && value >= CONTROL_AT) {
+    s.owned.push(regionId);
+    news.push(`${region.name} is yours. It pays ¢${region.income} a turn.`);
+  } else if (owned && value < LOSE_CONTROL_BELOW) {
+    s.owned = s.owned.filter((id) => id !== regionId);
+    news.push(`You have lost your grip on ${region.name}.`);
+  }
+}
+
+/** Chance per turn that a sleeper is exposed: rises the longer they stay, falls with stealth. */
+export function burnChance(state: CampaignState, agent: Agent, turnsIn: number): number {
+  const stealth = derive(agent, { toleranceBonus: toleranceBonus(state) }).stats.stealth;
+  return Math.max(0.03, Math.min(0.6, 0.06 + 0.04 * turnsIn - (stealth - 10) * 0.006));
+}
+
+/** Everything that happens between turns: income, sleepers, healing, new contracts. */
+function endTurn(s: CampaignState, deployed: Set<string>, news: string[]) {
+  const income = districtIncome(s);
+  if (income) {
+    s.money += income;
+    news.push(`Your districts paid ¢${income.toLocaleString('en-GB')}.`);
+  }
+  const rng = createRng(hashSeed(s.seed, 'sleepers', s.turn));
+  for (const sleeper of [...s.sleepers]) {
+    const agent = s.roster.find((a) => a.id === sleeper.agentId)!;
+    const region = REGION_BY_ID.get(sleeper.regionId)!;
+    const turnsIn = s.turn - sleeper.since;
+    if (rng.chance(burnChance(s, agent, turnsIn))) {
+      s.sleepers = s.sleepers.filter((x) => x !== sleeper);
+      if (rng.chance(0.5)) {
+        agent.status = 'active';
+        agent.hp = Math.max(1, agent.hp - 40);
+        if (!agent.traits.includes('jumpy')) agent.traits.push('jumpy');
+        agent.history.push(`Turn ${s.turn}: cover blown in ${region.name}; got out hurt.`);
+        news.push(`${agent.name}'s cover in ${region.name} was blown. They made it home, hurt and jumpy.`);
+      } else {
+        agent.status = 'missing';
+        agent.history.push(`Turn ${s.turn}: taken by ${RIVAL_SYNDICATE} in ${region.name}.`);
+        news.push(`${agent.name} has gone dark in ${region.name}. ${RIVAL_SYNDICATE} has them.`);
+      }
+      continue;
+    }
+    const skim = 150 + 50 * region.offset;
+    s.money += skim;
+    shiftInfluence(s, region.id, 12, news);
+    news.push(`${agent.name}, embedded in ${region.name}: +12 influence, ¢${skim} skimmed.`);
+  }
+  for (const agent of livingAgents(s)) {
+    // Agents who just came back only start healing next turn.
+    if (!deployed.has(agent.id)) agent.hp = Math.min(agent.maxHp, agent.hp + HEAL_PER_TURN);
+  }
+  s.turn++;
+  s.contracts = generateContracts(s);
+  s.news = news;
 }
 
 // --- Team development ----------------------------------------------------
@@ -328,7 +426,7 @@ export function deploy(state: CampaignState, contractId: string, squad: SquadOrd
       bonds: s.bonds,
     });
 
-    const news: TeamNews = { traits: new Map(), steadied: [], bonds: new Map() };
+    const team: TeamNews = { traits: new Map(), steadied: [], bonds: new Map() };
     for (const out of result.outcomes) {
       const agent = s.roster.find((a) => a.id === out.agentId)!;
       agent.missions++;
@@ -345,7 +443,7 @@ export function deploy(state: CampaignState, contractId: string, squad: SquadOrd
         agent.history.push(`Turn ${s.turn}: lost ${out.lostLimb === 'arms' ? 'an arm' : 'a leg'} at ${contract.target}.`);
       }
       if (out.overdose) agent.history.push(`Turn ${s.turn}: overdosed after the mission.`);
-      developAgent(agent, out, result, overBefore.get(agent.id) ?? false, s.turn, news);
+      developAgent(agent, out, result, overBefore.get(agent.id) ?? false, s.turn, team);
     }
 
     // Bonds grow between every pair who went in together and came back.
@@ -358,12 +456,12 @@ export function deploy(state: CampaignState, contractId: string, squad: SquadOrd
         const after = bondLevel(s.bonds[key]);
         if (after > before) {
           const [a, b] = [survivors[i], survivors[j]].map((id) => s.roster.find((x) => x.id === id)!.name);
-          news.bonds.set(after, [...(news.bonds.get(after) ?? []), `${a} & ${b}`]);
+          team.bonds.set(after, [...(team.bonds.get(after) ?? []), `${a} & ${b}`]);
         }
       }
     }
 
-    const events = newsLines(news);
+    const events = newsLines(team);
 
     if (result.success && result.kills === 0) {
       s.standing++;
@@ -387,13 +485,14 @@ export function deploy(state: CampaignState, contractId: string, squad: SquadOrd
     s.rp += result.rp;
     s.history.push({ turn: s.turn, contract, result, squad: squad.map((o) => o.agentId), rules: orders.rules, upkeep, doseCost: doses, events });
 
-    const deployed = new Set(squad.map((o) => o.agentId));
-    for (const agent of livingAgents(s)) {
-      // Agents who just came back only start healing next turn.
-      if (!deployed.has(agent.id)) agent.hp = Math.min(agent.maxHp, agent.hp + HEAL_PER_TURN);
+    const news: string[] = [];
+    if (contract.regionId) {
+      const gain = result.success ? 20 + 5 * contract.difficulty + (result.kills === 0 ? 10 : 0) : -10;
+      shiftInfluence(s, contract.regionId, gain, news);
+      const region = REGION_BY_ID.get(contract.regionId)!;
+      events.push(`Influence in ${region.name} ${gain >= 0 ? '+' : '−'}${Math.abs(gain)} (now ${s.influence[region.id]}%).`);
     }
-    s.turn++;
-    s.contracts = generateContracts(s);
+    endTurn(s, new Set(squad.map((o) => o.agentId)), news);
   });
 }
 
@@ -401,9 +500,76 @@ export function deploy(state: CampaignState, contractId: string, squad: SquadOrd
 export function rest(state: CampaignState): Outcome {
   return edit(state, (s) => {
     s.money -= weeklyCosts(s);
-    for (const agent of livingAgents(s)) agent.hp = Math.min(agent.maxHp, agent.hp + HEAL_PER_TURN * 2);
-    s.turn++;
-    s.contracts = generateContracts(s);
+    for (const agent of livingAgents(s)) agent.hp = Math.min(agent.maxHp, agent.hp + HEAL_PER_TURN);
+    endTurn(s, new Set(), ['The cell lay low for a turn.']);
+  });
+}
+
+// --- Sleepers ---------------------------------------------------------------
+
+/** Embed an agent in a district. They build influence and skim funds each turn until recalled or burned. */
+export function placeSleeper(state: CampaignState, agentId: string, regionId: string): Outcome {
+  return edit(state, (s) => {
+    const agent = s.roster.find((a) => a.id === agentId);
+    if (!agent || agent.status !== 'active') return 'Agent not available.';
+    if (!REGION_BY_ID.has(regionId)) return 'Unknown district.';
+    if (s.sleepers.some((x) => x.regionId === regionId)) return 'You already have someone embedded there.';
+    if (livingAgents(s).length <= 1) return 'Keep at least one agent at home.';
+    agent.status = 'sleeper';
+    s.sleepers.push({ agentId, regionId, since: s.turn });
+    agent.history.push(`Turn ${s.turn}: went under in ${REGION_BY_ID.get(regionId)!.name}.`);
+  });
+}
+
+export function recallSleeper(state: CampaignState, agentId: string): Outcome {
+  return edit(state, (s) => {
+    const sleeper = s.sleepers.find((x) => x.agentId === agentId);
+    const agent = s.roster.find((a) => a.id === agentId);
+    if (!sleeper || !agent) return 'Nobody to recall.';
+    s.sleepers = s.sleepers.filter((x) => x !== sleeper);
+    agent.status = 'active';
+    agent.history.push(`Turn ${s.turn}: came in from the cold.`);
+  });
+}
+
+// --- The Calyx run ------------------------------------------------------------
+
+export interface CalyxStop {
+  name: string;
+  reward: number;
+  /** Chance of being caught at this stop. */
+  risk: number;
+  caught: boolean;
+}
+
+const MARKET_STOPS = ['Noodle bar back door', 'Laundromat', 'Pachinko parlour', 'Night clinic', 'Rooftop drop', 'Customs blind spot'];
+
+/** A push-your-luck smuggling run. The stops are fixed per turn, so reloading changes nothing. */
+export function calyxStops(state: CampaignState, agentId: string): CalyxStop[] {
+  const agent = state.roster.find((a) => a.id === agentId);
+  const stealth = agent ? derive(agent, { toleranceBonus: toleranceBonus(state) }).stats.stealth : 10;
+  const rng = createRng(hashSeed(state.seed, 'calyx', state.turn, agentId));
+  return MARKET_STOPS.map((name, i) => {
+    const risk = Math.max(0.03, Math.min(0.8, 0.06 + 0.09 * i - (stealth - 10) * 0.008));
+    return { name, reward: 150 + 120 * i, risk, caught: rng.chance(risk) };
+  });
+}
+
+/** Settle a run where the player pushed through `stops` stops before banking (or being caught). */
+export function runCalyx(state: CampaignState, agentId: string, stops: number): Outcome {
+  return edit(state, (s) => {
+    if (s.calyxTurn === s.turn) return 'One Calyx run a turn.';
+    const agent = s.roster.find((a) => a.id === agentId);
+    if (!agent || agent.status !== 'active') return 'Agent not available.';
+    const route = calyxStops(state, agentId).slice(0, Math.max(1, Math.min(MARKET_STOPS.length, stops)));
+    s.calyxTurn = s.turn;
+    const caughtAt = route.findIndex((stop) => stop.caught);
+    if (caughtAt >= 0) {
+      agent.hp = Math.max(1, agent.hp - 25);
+      agent.history.push(`Turn ${s.turn}: caught on a Calyx run at the ${route[caughtAt].name.toLowerCase()}.`);
+      return;
+    }
+    s.money += route.reduce((sum, stop) => sum + stop.reward, 0);
   });
 }
 
@@ -454,7 +620,7 @@ export function offerPlace(state: CampaignState, agentId: string): { outcome: Ou
 
 export function score(state: CampaignState): number {
   const wins = state.history.filter((h) => h.result.success).length;
-  return wins * 1000 + Math.max(0, state.money) + livingAgents(state).length * 500 + state.standing * 250;
+  return wins * 1000 + Math.max(0, state.money) + livingAgents(state).length * 500 + state.standing * 250 + state.owned.length * 1500;
 }
 
 export function describeTraits(agent: Agent): string {

@@ -1,23 +1,25 @@
 import './style.css';
 import { agentTraits, derive, malfunctionChance, NO_DRUGS, type Derived } from '../sim/agent';
 import {
-  agentNeedsDose, bondName, debriefCaptive, deploy, doseCost, installAugment, isFinished, isUnlocked, livingAgents, migrate, newCampaign, offerPlace,
-  persuadeChance, recruit, releaseCaptive, removeAugment, rest, score, setLore, startResearch, toleranceBonus, weeklyCosts,
-  type CampaignState, type MissionOrders, type SquadOrder,
+  agentNeedsDose, bondName, burnChance, calyxStops, debriefCaptive, deploy, districtIncome, doseCost, installAugment, isFinished, isUnlocked, livingAgents,
+  migrate, newCampaign, offerPlace, persuadeChance, placeSleeper, recallSleeper, recruit, releaseCaptive, removeAugment, rest, runCalyx, score, setLore,
+  startResearch, toleranceBonus, weeklyCosts, type CampaignState, type MissionOrders, type SquadOrder,
 } from '../sim/campaign';
 import {
-  AUGMENTS, CAMPAIGN_LENGTH, MAX_ROSTER, MAX_SQUAD, MISSIONS, PRICES, RESEARCH, RIVAL_SYNDICATE, SLOT_LABELS, SLOTS, TRAITS,
+  AUGMENTS, CAMPAIGN_LENGTH, CONTROL_AT, MAX_ROSTER, MAX_SQUAD, MISSIONS, PRICES, REGION_BY_ID, REGIONS, RESEARCH, RIVAL_SYNDICATE, SLOT_LABELS, SLOTS,
+  TRAITS,
 } from '../sim/data';
 import { agentBio, briefingLine, CODEX, rivalLine } from '../sim/lore';
 import { bondBonusFor, bondKey, bondLevel, missionPhases, resolveMission } from '../sim/mission';
 import { hashSeed } from '../sim/rng';
 import type { Agent, Augment, Contract, Drugs, PhaseKind, RivalOrders, RulesOfEngagement, Slot, Stat } from '../sim/types';
 import { estimatePhases, powerRunsOutAt } from './odds';
+import { mountReplay, type ReplayController } from './replay';
 
 // --- State ------------------------------------------------------------------
 
-const SAVE_KEY = 'augment-save-v2';
-const V1_SAVE_KEY = 'augment-save-v1';
+const SAVE_KEY = 'augment-save-v3';
+const OLDER_SAVE_KEYS = ['augment-save-v2', 'augment-save-v1'];
 
 type Screen =
   | { name: 'hq' }
@@ -25,6 +27,7 @@ type Screen =
   | { name: 'plan'; contractId: string }
   | { name: 'debrief'; index: number; instant: boolean }
   | { name: 'codex' }
+  | { name: 'calyx' }
   | { name: 'help' };
 
 let game: CampaignState = load() ?? newCampaign(randomSeed());
@@ -33,6 +36,9 @@ let squad = new Map<string, SquadOrder>();
 let missionOrders: MissionOrders = { rules: 'lethal', rivalOrders: 'avoid' };
 let toast: { text: string; bad: boolean } | null = null;
 let versions: string[] = [];
+let selectedRegion: string | null = null;
+let calyx: { agentId: string; reached: number; result?: 'banked' | 'caught' } | null = null;
+let activeReplay: ReplayController | null = null;
 
 const app = document.getElementById('app')!;
 
@@ -42,7 +48,7 @@ function randomSeed(): number {
 
 function load(): CampaignState | null {
   try {
-    const raw = localStorage.getItem(SAVE_KEY) ?? localStorage.getItem(V1_SAVE_KEY);
+    const raw = [SAVE_KEY, ...OLDER_SAVE_KEYS].map((k) => localStorage.getItem(k)).find((v) => v);
     return raw ? migrate(JSON.parse(raw)) : null;
   } catch {
     return null;
@@ -127,6 +133,7 @@ function topbar() {
       <span><small>Credits</small> ${cr(game.money)}</span>
       <span><small>Research</small> ${game.rp} RP</span>
       <span title="Reputation for clean work. Helps persuade captives."><small>Standing</small> ${game.standing}</span>
+      <span title="Districts you control"><small>Districts</small> ${game.owned.length}/${REGIONS.length}</span>
     </div>
     <div class="top-actions">
       <button class="ghost" data-action="codex">Codex</button>
@@ -146,8 +153,14 @@ function slotPips(agent: Agent) {
 }
 
 function agentCard(agent: Agent) {
-  if (agent.status === 'kia') {
-    return `<div class="card agent kia"><div class="row"><strong>${esc(agent.name)}</strong><span class="tag bad">KIA</span></div><p class="muted">${agent.missions} missions</p></div>`;
+  if (agent.status === 'kia' || agent.status === 'missing') {
+    return `<div class="card agent kia"><div class="row"><strong>${esc(agent.name)}</strong><span class="tag bad">${agent.status === 'kia' ? 'KIA' : 'Missing'}</span></div><p class="muted">${agent.missions} missions</p></div>`;
+  }
+  if (agent.status === 'sleeper') {
+    const sleeper = game.sleepers.find((x) => x.agentId === agent.id);
+    const region = sleeper ? REGION_BY_ID.get(sleeper.regionId) : undefined;
+    return `<button class="card agent sleeper" data-action="region" data-id="${sleeper?.regionId ?? ''}"><div class="row"><strong>${esc(agent.name)}</strong><span class="tag warn">Sleeper</span></div>
+      <p class="muted small">Embedded in ${esc(region?.name ?? '?')} since turn ${sleeper?.since}.</p></button>`;
   }
   const d = agentDerived(agent);
   const over = d.load > d.tolerance;
@@ -178,6 +191,58 @@ function contractCard(c: Contract) {
       ${c.cleanBonus ? `<span class="tag good" title="Paid if nobody is killed">+${cr(c.cleanBonus)} if no deaths</span>` : ''}
     </div>
     <div class="row"><span class="pay">${cr(c.payout)}</span><button data-action="plan" data-id="${c.id}">Plan mission</button></div>
+  </div>`;
+}
+
+function cityMap() {
+  return `<svg class="citymap" viewBox="0 0 800 520" role="group" aria-label="City map">
+    ${REGIONS.map((r) => {
+      const inf = game.influence[r.id] ?? 0;
+      const owned = game.owned.includes(r.id);
+      const sel = selectedRegion === r.id;
+      const contract = game.contracts.find((c) => c.regionId === r.id);
+      const sleeper = game.sleepers.find((x) => x.regionId === r.id);
+      const fill = owned ? 'rgba(233,162,59,0.30)' : `rgba(233,162,59,${(0.03 + (inf / CONTROL_AT) * 0.17).toFixed(3)})`;
+      const [lx, ly] = r.label;
+      return `<g class="district ${sel ? 'sel' : ''}" data-action="region" data-id="${r.id}" role="button" tabindex="0" aria-label="${r.name}${contract ? ', contract available' : ''}">
+        <polygon points="${r.points}" fill="${fill}" stroke="${sel ? '#e9a23b' : '#4a4030'}" stroke-width="${sel ? 2.5 : 1}"></polygon>
+        <text x="${lx}" y="${ly}" text-anchor="middle" class="dname">${r.name.toUpperCase()}</text>
+        <text x="${lx}" y="${ly + 18}" text-anchor="middle" class="dinf">${owned ? 'CONTROLLED' : `${inf}%`}${r.lantern ? ' · BL' : ''}</text>
+        ${contract ? `<g transform="translate(${lx} ${ly + 40})"><polygon points="0,-11 11,0 0,11 -11,0" class="marker ${contract.rival ? 'rival' : ''}"></polygon><text y="4" text-anchor="middle" class="mnum">${contract.difficulty}</text></g>` : ''}
+        ${sleeper ? `<g transform="translate(${lx + (contract ? 30 : 0)} ${ly + 40})"><ellipse rx="11" ry="6" class="eye"></ellipse><circle r="3" class="pupil"></circle></g>` : ''}
+      </g>`;
+    }).join('')}
+  </svg>`;
+}
+
+function districtPanel() {
+  const region = selectedRegion ? REGION_BY_ID.get(selectedRegion) : undefined;
+  if (!region) {
+    return `<div class="district-panel"><h3>Select a district</h3>
+      <p class="muted">Diamonds are contracts, numbered by threat; violet ones have a ${RIVAL_SYNDICATE} operative on site. Winning work in a district builds influence. At ${CONTROL_AT}% it is yours and pays every turn. BL marks ${RIVAL_SYNDICATE} territory.</p>
+      <p class="muted">You can also embed a sleeper agent in a district. They work it from the inside while you get on with other jobs.</p>
+      ${districtIncome(game) ? `<p>Your districts pay <b>${cr(districtIncome(game))}</b> a turn.</p>` : ''}</div>`;
+  }
+  const inf = game.influence[region.id] ?? 0;
+  const owned = game.owned.includes(region.id);
+  const contract = game.contracts.find((c) => c.regionId === region.id);
+  const sleeper = game.sleepers.find((x) => x.regionId === region.id);
+  const sleeperAgent = sleeper ? game.roster.find((a) => a.id === sleeper.agentId) : undefined;
+  const finished = isFinished(game);
+  const candidates = livingAgents(game);
+  return `<div class="district-panel">
+    <div class="row"><h3>${region.name}</h3>${owned ? '<span class="tag good">Controlled</span>' : region.lantern ? `<span class="tag warn">${RIVAL_SYNDICATE}</span>` : ''}</div>
+    ${lore() ? `<p class="quote">${esc(region.blurb)}</p>` : ''}
+    <div class="mini"><span>Influence ${inf}%</span><span>Pays ${cr(region.income)} a turn once controlled</span></div>
+    <div class="bar"><span style="width:${inf}%"></span></div>
+    ${contract ? contractCard(contract) : '<p class="muted small">No contract here this turn.</p>'}
+    <h4>Sleeper</h4>
+    ${sleeperAgent && sleeper
+      ? `<p><b>${esc(sleeperAgent.name)}</b> has been under for ${game.turn - sleeper.since} ${game.turn - sleeper.since === 1 ? 'turn' : 'turns'}: +12 influence and ¢${150 + 50 * region.offset} a turn.
+          Exposure risk next turn: <b class="${burnChance(game, sleeperAgent, game.turn - sleeper.since) > 0.2 ? 'bad' : 'fair'}">${pct(burnChance(game, sleeperAgent, game.turn - sleeper.since))}</b>.</p>
+         <button class="ghost" data-action="recall" data-id="${sleeperAgent.id}" ${finished ? 'disabled' : ''}>Bring ${esc(sleeperAgent.name)} home</button>`
+      : `<p class="muted small">An embedded agent builds influence and skims funds every turn, but the longer they stay the likelier they are burned. Stealthy agents last longer. If exposed, they come home hurt or go missing.</p>
+         <div class="sleeper-picks">${candidates.length > 1 && !finished ? candidates.map((a) => `<button class="ghost" data-action="embed" data-id="${a.id}">Embed ${esc(a.name)} · ${pct(burnChance(game, a, 0))} risk</button>`).join('') : '<span class="muted small">You need at least two agents at home to spare one.</span>'}</div>`}
   </div>`;
 }
 
@@ -223,7 +288,12 @@ function hqView() {
   return `
   ${finished ? endBanner(finished) : ''}
   <main class="hq">
+    <section class="panel city">
+      <div class="panel-head"><h2>The city</h2>${finished ? '' : '<button class="ghost" data-action="rest" title="Skip a turn. Everyone heals; sleepers keep working; running costs are still due.">Lie low a turn</button>'}</div>
+      <div class="city-grid">${cityMap()}${districtPanel()}</div>
+    </section>
     <div class="col">
+      ${game.news.length ? `<section class="panel news"><h2>Overnight</h2><ul class="list events">${game.news.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></section>` : ''}
       <section class="panel roster">
         <div class="panel-head"><h2>Roster</h2><button data-action="recruit" ${finished || living.length >= MAX_ROSTER || game.money < PRICES.recruit ? 'disabled' : ''}>Recruit ${cr(PRICES.recruit)}</button></div>
         <div class="grid">${game.roster.map(agentCard).join('')}</div>
@@ -237,8 +307,13 @@ function hqView() {
     </div>
     <div class="col">
       <section class="panel contracts">
-        <div class="panel-head"><h2>Contracts</h2>${finished ? '' : '<button class="ghost" data-action="rest" title="Skip a turn. Everyone heals double; running costs are still due.">Lie low a turn</button>'}</div>
+        <h2>Contracts</h2>
         ${finished ? '<p class="muted">The campaign is over.</p>' : game.contracts.map(contractCard).join('')}
+      </section>
+      <section class="panel market">
+        <h2>Night market</h2>
+        <p class="muted small">Send one agent on a Calyx smuggling run through the night market. Each stop adds to the haul and to the risk. Bank it whenever you like. One run a turn.</p>
+        <button data-action="calyx" ${finished || game.calyxTurn === game.turn || !living.length ? 'disabled' : ''}>${game.calyxTurn === game.turn ? 'Done this turn' : 'Start a Calyx run'}</button>
       </section>
       <section class="panel research">
         <h2>Research</h2>
@@ -251,9 +326,9 @@ function hqView() {
 }
 
 function footer() {
-  const older = versions.filter((v) => v !== 'v2');
+  const older = versions.filter((v) => v !== 'v3');
   return `<footer class="footer">
-    <span>Augment v2</span>
+    <span>Augment v3</span>
     ${older.length ? `<span>Earlier versions: ${older.map((v) => `<a href="./${v}/">${v}</a>`).join(' · ')}</span>` : ''}
     <span class="muted">On a phone: open this page, then “Add to Home Screen” or “Install app” to play it like an app, offline too.</span>
   </footer>`;
@@ -519,15 +594,23 @@ function debriefView(index: number, instant: boolean) {
     return `<li><strong>${esc(agent?.name ?? '?')}</strong> ${status} <span class="muted small">${o.kia ? '' : `${o.hp} HP · `}${tally}</span></li>`;
   }).join('');
   const net = result.payout + result.cleanBonus - rec.upkeep - rec.doseCost;
-  const delay = (i: number) => (instant ? 0 : i * 140);
   return `
   <main class="debrief">
     <div class="crumbs"><button class="link" data-action="home">‹ HQ</button></div>
     <h1>Debrief · ${MISSIONS[contract.type].label}</h1>
+    <section class="panel replay">
+      <canvas id="replay-canvas" role="img" aria-label="After-action reconstruction of the mission. The text log below says the same."></canvas>
+      <div class="replay-bar">
+        <button data-action="replay-toggle" id="replay-toggle">${instant ? 'Play' : 'Pause'}</button>
+        <button class="ghost" data-action="replay-restart">Restart</button>
+        <button class="ghost" data-action="replay-speed" id="replay-speed">1×</button>
+        <button class="ghost" data-action="skip">Skip to end</button>
+        <p class="caption" id="replay-caption" aria-live="polite"></p>
+      </div>
+    </section>
     <div class="two-col">
-      <section class="panel log ${instant ? 'instant' : ''}">
-        ${result.log.map((l, i) => `<p class="line ${l.tone}" style="animation-delay:${delay(i)}ms">${esc(l.text)}</p>`).join('')}
-        ${instant ? '' : '<button class="ghost skip" data-action="skip">Skip</button>'}
+      <section class="panel log" id="replay-log">
+        ${result.log.map((l, i) => `<p class="line ${l.tone} ${instant ? '' : 'pending'}" data-i="${i}">${esc(l.text)}</p>`).join('')}
       </section>
       <section class="panel summary">
         <div class="result ${result.success ? 'good' : 'bad'}">${result.success ? (result.compromised ? 'Compromised' : 'Success') : 'Failed'}</div>
@@ -602,13 +685,91 @@ function helpView() {
         <li><b>Leaving no bodies</b> raises your standing, earns extra research and collects any no-deaths bonus the client offers. Pure stealth counts too.</li>
         <li><b>Rival operatives</b> from ${RIVAL_SYNDICATE} sometimes work the same site. Avoid them, eliminate them, or capture them and carry them home. A captive can be released, debriefed for research, or offered a place on your team, augments included.</li>
       </ul>
+      <h2>The city</h2>
+      <ul>
+        <li><b>Districts.</b> Every contract is in a district. Success builds influence there (more for clean work); failure loses some. At ${CONTROL_AT}% the district is yours and pays every turn.</li>
+        <li><b>Sleepers.</b> Embed an agent in a district to build influence and skim funds every turn. The longer they stay the likelier they are burned; stealth helps. Burned sleepers come home hurt or go missing.</li>
+        <li><b>The night market.</b> Once a turn, send an agent on a push-your-luck Calyx run. Bank the haul whenever you like, before your luck runs out.</li>
+      </ul>
+      <h2>After-action reports</h2>
+      <p>Every debrief opens with a reconstruction of the mission: the route, the guards, the alarm, the hacks and the extraction, played back like recovered surveillance footage. You watch; you never control it.</p>
       <h2>Drugs and injuries</h2>
       <p>Intelligence, perception and adrenaline boost an agent for one mission, then they crash. Downed agents may lose a limb; fit any augment in that slot to replace it. Agents left behind do not come back.</p>
     </section>
   </main>`;
 }
 
+function calyxView() {
+  const living = livingAgents(game);
+  if (!calyx) {
+    return `
+    <main class="calyx">
+      <div class="crumbs"><button class="link" data-action="home">‹ HQ</button></div>
+      <h1>Night market</h1>
+      ${lore() ? '<p class="quote">Calyx moves through the night market in thermos flasks and noodle cartons. Every stop pays. Every stop has eyes.</p>' : ''}
+      <section class="panel">
+        <h2>Choose a runner</h2>
+        <p class="muted small">Stealthy agents are harder to catch. Getting caught costs the whole haul and 25 HP.</p>
+        <div class="runner-picks">${living.map((a) => {
+          const first = calyxStops(game, a.id)[0];
+          return `<button class="card runner" data-action="calyx-runner" data-id="${a.id}"><strong>${esc(a.name)}</strong><span class="muted small">${a.hp} HP · first stop ${pct(first.risk)} risk</span></button>`;
+        }).join('')}</div>
+      </section>
+    </main>`;
+  }
+  const agent = game.roster.find((a) => a.id === calyx!.agentId)!;
+  const stops = calyxStops(game, agent.id);
+  const haul = stops.slice(0, calyx.reached).reduce((sum, x) => sum + x.reward, 0);
+  const next = stops[calyx.reached];
+  const done = !!calyx.result;
+  return `
+  <main class="calyx">
+    <div class="crumbs"><button class="link" data-action="home">‹ HQ</button></div>
+    <h1>Night market · ${esc(agent.name)}</h1>
+    <section class="panel">
+      <ol class="route">${stops.map((stop, i) => {
+        const state = i < calyx!.reached ? (stop.caught ? 'caught' : 'cleared') : i === calyx!.reached && !done ? 'next' : 'ahead';
+        return `<li class="stop ${state}"><span class="stop-name">${stop.name}</span><span class="mono">+${cr(stop.reward)}</span><span class="mono ${stop.risk > 0.3 ? 'bad' : 'fair'}">${pct(stop.risk)}</span>
+          <span class="stop-state">${state === 'caught' ? 'Caught' : state === 'cleared' ? 'Clear' : state === 'next' ? 'Next' : ''}</span></li>`;
+      }).join('')}</ol>
+      <div class="haul"><span class="muted">Haul</span> <b>${cr(calyx.result === 'caught' ? 0 : haul)}</b></div>
+      ${done
+        ? `<p class="${calyx.result === 'caught' ? 'bad' : 'good'}">${calyx.result === 'caught' ? `${esc(agent.name)} was stopped and searched. The haul is gone, and so is 25 HP.` : `${esc(agent.name)} banked ${cr(haul)}.`}</p>
+           <button class="primary" data-action="home">Back to HQ</button>`
+        : `<div class="calyx-actions">
+            ${next ? `<button class="primary" data-action="calyx-push">${calyx.reached ? 'Push on' : 'Set out'} to the ${next.name.toLowerCase()} · ${pct(next.risk)} risk</button>` : ''}
+            ${calyx.reached ? `<button class="ghost" data-action="calyx-bank">Bank ${cr(haul)} and go home</button>` : '<button class="ghost" data-action="home">Not tonight</button>'}
+          </div>`}
+    </section>
+  </main>`;
+}
+
+function onReplayStep(rec: CampaignState['history'][number], i: number) {
+  const caption = document.getElementById('replay-caption');
+  if (caption) caption.textContent = rec.result.log[i]?.text ?? '';
+  const logEl = document.getElementById('replay-log');
+  logEl?.querySelectorAll<HTMLElement>('.line').forEach((el) => {
+    const n = Number(el.dataset.i);
+    el.classList.toggle('pending', n > i);
+    el.classList.toggle('current', n === i);
+  });
+  const current = logEl?.querySelector<HTMLElement>('.line.current');
+  if (logEl && current) logEl.scrollTop = current.offsetTop - logEl.offsetTop - logEl.clientHeight / 2;
+}
+
+function mountDebriefReplay() {
+  if (screen.name !== 'debrief') return;
+  const rec = game.history[screen.index];
+  const canvas = document.getElementById('replay-canvas') as HTMLCanvasElement | null;
+  if (!rec || !canvas) return;
+  const instant = screen.instant;
+  activeReplay = mountReplay(canvas, rec.contract, rec.result.log, rec.squad, (i) => onReplayStep(rec, i), instant ? rec.result.log.length - 1 : 0);
+  if (!instant) activeReplay.play();
+}
+
 function render() {
+  activeReplay?.destroy();
+  activeReplay = null;
   let body: string;
   switch (screen.name) {
     case 'hq': body = hqView(); break;
@@ -616,12 +777,19 @@ function render() {
     case 'plan': body = planView(screen.contractId); break;
     case 'debrief': body = debriefView(screen.index, screen.instant); break;
     case 'codex': body = codexView(); break;
+    case 'calyx': body = calyxView(); break;
     case 'help': body = helpView(); break;
   }
   app.innerHTML = `${topbar()}${toast ? `<div class="toast ${toast.bad ? 'bad' : ''}" role="status">${esc(toast.text)}</div>` : ''}${body}`;
+  mountDebriefReplay();
 }
 
 // --- Events -----------------------------------------------------------------
+
+function setToggleLabel() {
+  const button = document.getElementById('replay-toggle');
+  if (button) button.textContent = activeReplay?.playing ? 'Pause' : 'Play';
+}
 
 app.addEventListener('click', (event) => {
   const el = (event.target as HTMLElement).closest<HTMLElement>('[data-action]');
@@ -672,11 +840,62 @@ app.addEventListener('click', (event) => {
       break;
     case 'view-debrief': return go({ name: 'debrief', index: Number(index), instant: true });
     case 'skip':
-      if (screen.name === 'debrief') screen = { ...screen, instant: true };
+      activeReplay?.toEnd();
+      setToggleLabel();
+      return;
+    case 'replay-toggle':
+      activeReplay?.toggle();
+      setToggleLabel();
+      return;
+    case 'replay-restart':
+      activeReplay?.restart();
+      setToggleLabel();
+      return;
+    case 'replay-speed': {
+      const next = el.textContent === '1×' ? 2 : el.textContent === '2×' ? 4 : 1;
+      activeReplay?.setSpeed(next);
+      el.textContent = `${next}×`;
+      return;
+    }
+    case 'region':
+      selectedRegion = selectedRegion === id ? null : id || null;
+      if (screen.name !== 'hq') return go({ name: 'hq' });
+      break;
+    case 'embed':
+      if (selectedRegion) apply(placeSleeper(game, id!, selectedRegion), 'Your agent has gone under.');
+      break;
+    case 'recall': apply(recallSleeper(game, id!), 'Your sleeper is coming home.'); break;
+    case 'calyx':
+      calyx = null;
+      return go({ name: 'calyx' });
+    case 'calyx-runner':
+      calyx = { agentId: id!, reached: 0 };
+      break;
+    case 'calyx-push':
+      if (calyx && !calyx.result) {
+        const stops = calyxStops(game, calyx.agentId);
+        calyx.reached++;
+        const caught = stops[calyx.reached - 1]?.caught;
+        if (caught || calyx.reached >= stops.length) {
+          if (apply(runCalyx(game, calyx.agentId, calyx.reached))) calyx.result = caught ? 'caught' : 'banked';
+        }
+      }
+      break;
+    case 'calyx-bank':
+      if (calyx && !calyx.result && apply(runCalyx(game, calyx.agentId, calyx.reached))) calyx.result = 'banked';
       break;
     default: return;
   }
   render();
+});
+
+// Map districts are SVG groups: let Enter and Space press them like buttons.
+app.addEventListener('keydown', (event) => {
+  const el = event.target as HTMLElement;
+  if ((event.key === 'Enter' || event.key === ' ') && el.getAttribute('role') === 'button' && el.dataset.action) {
+    event.preventDefault();
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  }
 });
 
 app.addEventListener('change', (event) => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createAgent, derive, malfunctionChance } from '../src/sim/agent';
-import { deploy, installAugment, migrate, newCampaign, offerPlace, rest, startResearch } from '../src/sim/campaign';
+import { calyxStops, deploy, installAugment, migrate, newCampaign, offerPlace, placeSleeper, recallSleeper, rest, runCalyx, startResearch } from '../src/sim/campaign';
 import { resolveMission } from '../src/sim/mission';
 import { createRng } from '../src/sim/rng';
 import type { Agent, Contract } from '../src/sim/types';
@@ -157,8 +157,53 @@ describe('v2: team, orders and captives', () => {
     for (const key of ['standing', 'bonds', 'captives', 'codex', 'settings']) delete v1[key];
     (v1.roster as Agent[]).forEach((a) => { delete (a as Partial<Agent>).traits; delete (a as Partial<Agent>).record; });
     const s = migrate(v1)!;
-    expect(s.version).toBe(2);
+    expect(s.version).toBe(3);
+    expect(s.contracts.every((c) => c.regionId)).toBe(true);
     expect(s.roster.every((a) => a.traits.length === 1)).toBe(true);
     expect(s.captives).toEqual([]);
+  });
+});
+
+describe('v3: the city map', () => {
+  it('offers four contracts in four different districts', () => {
+    const s = newCampaign(21);
+    expect(new Set(s.contracts.map((c) => c.regionId)).size).toBe(4);
+  });
+
+  it('a successful contract raises influence in its district', () => {
+    const s = newCampaign(8);
+    const c = s.contracts[0];
+    const r = deploy(s, c.id, s.roster.map((a) => ({ agentId: a.id, drugs: NONE, dosed: false })));
+    if (!r.ok) throw new Error(r.error);
+    const last = r.state.history.at(-1)!;
+    expect(r.state.influence[c.regionId!]).toBe(last.result.success ? 20 + 5 * c.difficulty + (last.result.kills === 0 ? 10 : 0) : 0);
+  });
+
+  it('sleepers leave the roster, report each turn, and can be recalled', () => {
+    let s = newCampaign(3);
+    const id = s.roster[0].id;
+    const placed = placeSleeper(s, id, 'docks');
+    if (!placed.ok) throw new Error(placed.error);
+    s = placed.state;
+    expect(s.roster[0].status).toBe('sleeper');
+    const r = rest(s);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.state.news.some((n) => n.includes(s.roster[0].name))).toBe(true);
+    if (r.state.roster[0].status === 'sleeper') {
+      const back = recallSleeper(r.state, id);
+      expect(back.ok && back.state.roster[0].status).toBe('active');
+    }
+  });
+
+  it('the Calyx run is fixed per turn and pays only if nobody is caught', () => {
+    const s = newCampaign(4);
+    const id = s.roster[0].id;
+    expect(calyxStops(s, id)).toEqual(calyxStops(s, id));
+    const stops = calyxStops(s, id);
+    const r = runCalyx(s, id, 3);
+    if (!r.ok) throw new Error(r.error);
+    const caught = stops.slice(0, 3).some((x) => x.caught);
+    expect(r.state.money - s.money).toBe(caught ? 0 : stops.slice(0, 3).reduce((a, x) => a + x.reward, 0));
+    expect(runCalyx(r.state, id, 1).ok).toBe(false);
   });
 });

@@ -27,6 +27,7 @@ Every finished version is kept on a `release/vN` branch. On each push to `main`,
 | --- | --- |
 | v1 | The core loop: augments, budgets, missions, forecast, debrief. |
 | v2 | Optional lore and codex; personalities, earned traits and bonds; non-lethal missions; rival operatives you can capture and recruit; installable app. |
+| v3 | City map of eight districts with influence and control; sleeper agents; the Night Market Calyx run; animated after-action replays in every debrief. |
 
 ## How it plays
 
@@ -53,6 +54,16 @@ Every finished version is kept on a `release/vN` branch. On each push to `main`,
 - **No bodies, more rewards**: clean contracts raise *standing*, earn extra research and collect a client's no-deaths bonus.
 - **Rival operatives** from Black Lantern sometimes share the site. Avoid, eliminate or capture them. Captives can be released, debriefed for research, or offered a place on the team with their augments.
 
+### The city (v3)
+
+- **Districts**: every contract sits in one of eight districts. Success builds influence; at 100% the district is yours and pays every turn.
+- **Sleepers**: embed an agent in a district to build influence and skim funds from the inside. Exposure risk grows each turn they stay; burned sleepers come home hurt or go missing.
+- **The Night Market**: a once-a-turn, push-your-luck Calyx smuggling run. Bank the haul or push on.
+
+### After-action reports (v3)
+
+Every debrief opens with an isometric, night-time reconstruction of the mission, drawn from events the simulation records: route, patrols, takedowns, alarm, hacks, the rival and the extraction van. Watch-only, with play, pause, speed and skip.
+
 ### Lore (v2, optional)
 
 Client briefings, rival intercepts, agent biographies and a codex that fills in as you meet corporations and rivals. You can switch it off in the codex.
@@ -66,6 +77,7 @@ Client briefings, rival intercepts, agent biographies and a codex that fills in 
 | `src/sim/mission.ts` | Seeded, deterministic mission resolution that also writes the debrief log. |
 | `src/sim/campaign.ts` | Campaign state and player actions (install, research, recruit, deploy, captives), traits and bonds. Pure functions. |
 | `src/sim/lore.ts` | Codex entries, biographies and briefing lines. No effect on the simulation. |
+| `src/ui/replay.ts` | Canvas renderer for the after-action replay. |
 | `src/ui/` | Browser UI, plain TypeScript with no framework. |
 | `scripts/balance.ts` | Runs thousands of missions with preset teams and prints success rates. |
 | `tests/` | Vitest unit tests for the simulation. |
@@ -80,5 +92,4 @@ npm run balance -- 2000  # more runs
 
 ## Roadmap
 
-- **Watchable replay**: draw the same seeded simulation on a 2D isometric map.
 - **Optional tactics**: player control layered over the replay.

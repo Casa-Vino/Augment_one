@@ -195,3 +195,34 @@ export const PERSONALITIES = TRAITS.filter((t) => t.kind === 'personality').map(
 export const RIVAL_SYNDICATE = 'Black Lantern';
 export const RIVAL_CODENAMES = ['Wren', 'Ashfall', 'Moth', 'Lattice', 'Cinder', 'Halberd', 'Quill', 'Saltire', 'Vesper', 'Kestrel', 'Rook', 'Tallow'];
 export const RIVAL_NAMES = ['Ilse Varga', 'Tomas Reid', 'Ana Bloom', 'Joon Park', 'Dara Quist', 'Felix Ortega', 'Mira Coll', 'Sasha Lind', 'Remy Okoro', 'Noor Saleh', 'Pia Hart', 'Elias Vane'];
+
+export interface Region {
+  id: string;
+  name: string;
+  blurb: string;
+  /** Added to contract difficulty here. */
+  offset: number;
+  /** Credits per turn once you control the district. */
+  income: number;
+  /** Black Lantern is strong here: rivals turn up more often. */
+  lantern: boolean;
+  /** Outline on the 800×520 city map. */
+  points: string;
+  label: [number, number];
+}
+
+export const REGIONS: Region[] = [
+  { id: 'uplink', name: 'Uplink Fields', blurb: 'Dish farms and relay towers. Whoever holds them hears everything.', offset: 1, income: 400, lantern: false, points: '40,40 260,40 270,120 250,200 40,200', label: [140, 122] },
+  { id: 'spire', name: 'Spire Heights', blurb: 'Corporate towers above the smog line. The best-paid jobs and the best-armed guards.', offset: 2, income: 600, lantern: false, points: '260,40 520,40 530,180 400,185 270,120', label: [395, 100] },
+  { id: 'arcology', name: 'Arcology Ring', blurb: 'Sealed habitats for the rich. Black Lantern runs their security on the side.', offset: 2, income: 500, lantern: true, points: '520,40 760,40 760,220 530,180', label: [640, 118] },
+  { id: 'oldq', name: 'Old Quarter', blurb: 'Pre-Accord streets, cheap clinics and long memories.', offset: 0, income: 250, lantern: false, points: '40,200 250,200 280,340 40,340', label: [150, 272] },
+  { id: 'transit', name: 'Transit Spine', blurb: 'Maglev lines and freight yards. Everything moves through here.', offset: 1, income: 350, lantern: false, points: '250,200 270,120 400,185 530,180 520,360 280,340', label: [395, 268] },
+  { id: 'clinic', name: 'Clinic Row', blurb: 'Augmentation clinics and Calyx dispensaries. Halcyon owns half the street.', offset: 1, income: 400, lantern: false, points: '530,180 760,220 760,380 520,360', label: [640, 292] },
+  { id: 'docks', name: 'Docklands', blurb: 'Container stacks and smugglers. Black Lantern started here.', offset: 0, income: 300, lantern: true, points: '40,340 280,340 340,370 360,480 40,480', label: [180, 414] },
+  { id: 'under', name: 'Undercity', blurb: 'The levels below the levels. Nobody asks, nobody tells.', offset: 1, income: 300, lantern: true, points: '280,340 520,360 760,380 760,480 360,480 340,370', label: [560, 428] },
+];
+
+export const REGION_BY_ID = new Map(REGIONS.map((r) => [r.id, r]));
+export const CONTROL_AT = 100;
+/** A controlled district is lost if influence falls below this. */
+export const LOSE_CONTROL_BELOW = 50;

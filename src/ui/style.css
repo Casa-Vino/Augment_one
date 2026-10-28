@@ -240,7 +240,50 @@ button.card:hover { border-color: var(--gold); filter: none; }
 .footer { max-width: 1280px; margin: 0 auto; padding: 0 1.25rem 2rem; display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; font-size: 0.85rem; color: var(--muted); }
 .footer a { color: var(--gold); }
 
+/* v3: city map, night market, after-action replay */
+.hq .city { grid-column: 1 / -1; }
+.city-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 1.25rem; align-items: start; }
+.citymap { width: 100%; height: auto; display: block; background: #0d0c09; border: 1px solid var(--line); }
+.citymap .district { cursor: pointer; outline: none; }
+.citymap .district:hover polygon:first-child, .citymap .district:focus-visible polygon:first-child { stroke: var(--gold); stroke-width: 2; }
+.citymap .dname { fill: var(--text); font: 700 15px Rajdhani, sans-serif; letter-spacing: 0.12em; pointer-events: none; }
+.citymap .dinf { fill: var(--muted); font: 600 12px 'JetBrains Mono', monospace; pointer-events: none; }
+.citymap .marker { fill: var(--gold); stroke: #0b0a08; stroke-width: 2; }
+.citymap .marker.rival { fill: #c08af0; }
+.citymap .mnum { fill: #0b0a08; font: 700 12px 'JetBrains Mono', monospace; pointer-events: none; }
+.citymap .eye { fill: #0b0a08; stroke: var(--stealth); stroke-width: 1.5; }
+.citymap .pupil { fill: var(--stealth); }
+.district-panel h3 { margin: 0; font-size: 1.3rem; letter-spacing: 0.06em; }
+.district-panel h4 { margin: 1rem 0 0.3rem; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--gold); }
+.district-panel .card.contract { margin-top: 0.75rem; }
+.sleeper-picks, .runner-picks { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.card.sleeper { border-color: rgba(79, 163, 199, 0.5); }
+.news .events li { padding: 0.35rem 0; }
+.replay { padding: 0; overflow: hidden; margin-bottom: 1rem; }
+#replay-canvas { display: block; width: 100%; aspect-ratio: 16 / 9; background: #080706; }
+.replay-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.6rem 0.75rem; border-top: 1px solid var(--line); }
+.replay-bar button { min-height: 36px; }
+.caption { flex: 1 1 260px; margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; color: var(--text); min-height: 1.4em; }
+#replay-log { max-height: 420px; overflow-y: auto; padding-top: 1rem; }
+.line.pending { display: none; }
+.line.current { background: rgba(233, 162, 59, 0.08); }
+.calyx .panel { max-width: 720px; }
+.route { list-style: none; padding: 0; margin: 0 0 1rem; }
+.stop { display: grid; grid-template-columns: 1fr 80px 50px 60px; gap: 0.75rem; align-items: center; padding: 0.55rem 0.5rem; border-bottom: 1px solid var(--line); }
+.stop.ahead { opacity: 0.5; }
+.stop.next { background: rgba(233, 162, 59, 0.08); }
+.stop.cleared .stop-state { color: var(--good); }
+.stop.caught .stop-state { color: var(--bad); }
+.stop-name { font-weight: 600; }
+.haul { font-family: 'JetBrains Mono', monospace; font-size: 1.4rem; margin-bottom: 0.75rem; }
+.calyx-actions { display: grid; gap: 0.5rem; }
+.card.runner { display: flex; flex-direction: column; gap: 0.2rem; width: auto; min-width: 180px; }
+
 @media (max-width: 860px) {
+  .city-grid { grid-template-columns: 1fr; }
+  .stop { grid-template-columns: 1fr 70px 44px; }
+  .stop-state { display: none; }
+
   main { padding: 1rem; }
   .hq, .two-col { grid-template-columns: 1fr; }
   .top-actions { margin-left: 0; }

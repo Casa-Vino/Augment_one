@@ -58,7 +58,8 @@ export interface Agent {
   missions: number;
   kills: number;
   history: string[];
-  status: 'active' | 'kia';
+  /** Sleepers are embedded in a district; missing agents were burned and taken. */
+  status: 'active' | 'kia' | 'sleeper' | 'missing';
   /** Trait ids: one personality from the start, plus perks and quirks earned in the field. */
   traits: string[];
   record: AgentRecord;
@@ -109,15 +110,34 @@ export interface Contract {
   client: string;
   target: string;
   payout: number;
+  /** District on the city map. */
+  regionId?: string;
   /** A rival syndicate operative is working the same site. */
   rival?: Agent;
   /** The client pays this bonus if nobody is killed. */
   cleanBonus?: number;
 }
 
+/** What a log line shows in the after-action replay. Agents are referred to by id. */
+export type ReplayEvent =
+  | { kind: 'phase'; index: number; phase: PhaseKind }
+  | { kind: 'engage'; count: number }
+  | { kind: 'takedown'; agent: string; count: number; lethal: boolean }
+  | { kind: 'hit'; agent: string }
+  | { kind: 'down'; agent: string }
+  | { kind: 'stunned'; agent: string }
+  | { kind: 'power'; agent: string }
+  | { kind: 'sneak'; agent?: string }
+  | { kind: 'alarm'; agent?: string }
+  | { kind: 'hack'; agent: string; ok: boolean }
+  | { kind: 'rival'; event: 'appears' | 'hit' | 'avoided' | 'captured' | 'killed' | 'escaped'; agent?: string }
+  | { kind: 'exfil'; ok: boolean }
+  | { kind: 'aftermath' };
+
 export interface LogLine {
   text: string;
   tone: 'header' | 'good' | 'bad' | 'info';
+  ev?: ReplayEvent;
 }
 
 export interface AgentOutcome {

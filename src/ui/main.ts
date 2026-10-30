@@ -9,11 +9,12 @@ import {
   AUGMENTS, CAMPAIGN_LENGTH, CONTROL_AT, MAX_ROSTER, MAX_SQUAD, MISSIONS, PRICES, REGION_BY_ID, REGIONS, RESEARCH, RIVAL_SYNDICATE, SLOT_LABELS, SLOTS,
   TRAITS,
 } from '../sim/data';
-import { agentBio, briefingLine, CODEX, rivalLine } from '../sim/lore';
+import { agentBio, AUGMENT_LORE, briefingLine, CODEX, rivalLine } from '../sim/lore';
 import { bondBonusFor, bondKey, bondLevel, missionPhases, resolveMission } from '../sim/mission';
 import { hashSeed } from '../sim/rng';
 import type { Agent, Augment, Contract, Drugs, PhaseKind, RivalOrders, RulesOfEngagement, Slot, Stat } from '../sim/types';
 import { estimatePhases, powerRunsOutAt } from './odds';
+import { augmentPlate, bodyFigure } from './augart';
 import { mountReplay, type ReplayController } from './replay';
 
 // --- State ------------------------------------------------------------------
@@ -23,7 +24,7 @@ const OLDER_SAVE_KEYS = ['augment-save-v2', 'augment-save-v1'];
 
 type Screen =
   | { name: 'hq' }
-  | { name: 'agent'; agentId: string; slot?: Slot }
+  | { name: 'agent'; agentId: string; slot?: Slot; inspect?: string }
   | { name: 'plan'; contractId: string }
   | { name: 'debrief'; index: number; instant: boolean }
   | { name: 'codex' }
@@ -326,9 +327,9 @@ function hqView() {
 }
 
 function footer() {
-  const older = versions.filter((v) => v !== 'v3');
+  const older = versions.filter((v) => v !== 'v4');
   return `<footer class="footer">
-    <span>Augment v3</span>
+    <span>Augment v4</span>
     ${older.length ? `<span>Earlier versions: ${older.map((v) => `<a href="./${v}/">${v}</a>`).join(' · ')}</span>` : ''}
     <span class="muted">On a phone: open this page, then “Add to Home Screen” or “Install app” to play it like an app, offline too.</span>
   </footer>`;
@@ -388,7 +389,12 @@ function bondsList(agent: Agent) {
   }).join('')}</ul>`;
 }
 
-function agentView(agentId: string, openSlot?: Slot) {
+function plateFor(augId: string, size: number) {
+  const aug = AUGMENTS.find((a) => a.id === augId);
+  return augmentPlate(augId, AUGMENT_LORE[augId]?.model ?? '', { size, name: aug?.name });
+}
+
+function agentView(agentId: string, openSlot?: Slot, inspect?: string) {
   const agent = game.roster.find((a) => a.id === agentId);
   if (!agent) return hqView();
   const d = agentDerived(agent);
@@ -405,16 +411,25 @@ function agentView(agentId: string, openSlot?: Slot) {
           const unlocked = isUnlocked(game, a.id);
           const installed = a.id === id;
           const req = a.research ? RESEARCH.find((r) => r.id === a.research)?.name : '';
-          return `<li class="option ${installed ? 'installed' : ''} ${unlocked ? '' : 'locked'}">
-            <div class="opt-main"><strong>${a.name}</strong> <span class="tier">T${a.tier}</span><p class="muted">${a.desc}</p>
-              <div class="chips">${installed ? '<span class="chip">Installed</span>' : deltaChips(agent, a)}</div></div>
-            ${installed ? '' : unlocked ? `<button data-action="install" data-id="${a.id}" ${game.money < a.cost ? 'disabled' : ''}>Install ${cr(a.cost)}</button>` : `<span class="tag">Research: ${req}</span>`}
+          const lore = AUGMENT_LORE[a.id];
+          const inspecting = inspect === a.id;
+          const action = installed ? '' : unlocked ? `<button data-action="install" data-id="${a.id}" ${game.money < a.cost ? 'disabled' : ''}>Install ${cr(a.cost)}</button>` : `<span class="tag">Research: ${req}</span>`;
+          return `<li class="option ${installed ? 'installed' : ''} ${unlocked ? '' : 'locked'} ${inspecting ? 'inspecting' : ''}">
+            <button class="thumb" data-action="inspect" data-id="${a.id}" aria-label="${inspecting ? 'Close' : 'Inspect'} ${a.name}" aria-expanded="${inspecting}">${plateFor(a.id, inspecting ? 220 : 72)}</button>
+            <div class="opt-main">
+              <div class="opt-title"><button class="link opt-name" data-action="inspect" data-id="${a.id}"><strong>${a.name}</strong></button><span class="tier">T${a.tier}</span></div>
+              ${lore ? `<p class="maker">${esc(lore.maker)} · ${esc(lore.model)}</p>` : ''}
+              <p class="muted">${inspecting && lore ? esc(lore.line) : a.desc}</p>
+              <div class="chips">${installed ? '<span class="chip">Installed</span>' : deltaChips(agent, a)}</div>
+              ${inspecting ? `<p class="mono small spec">LOAD ${a.load} · DRAIN ${a.drain}/PHASE · SIGNATURE ${signed(a.signature)}${a.energy ? ` · ENERGY +${a.energy}` : ''}</p>` : ''}
+              <div class="opt-action">${action}</div>
+            </div>
           </li>`;
         }).join('')
       : '';
     return `<div class="slot ${open ? 'open' : ''}">
       <div class="slot-head">
-        <span class="slot-name">${SLOT_LABELS[slot]}</span>
+        <span class="slot-name">${aug ? `<span class="slot-thumb">${plateFor(aug.id, 40)}</span>` : ''}${SLOT_LABELS[slot]}</span>
         <span class="slot-aug ${missing ? 'bad' : aug ? '' : 'muted'}">${aug ? aug.name : missing ? `Missing ${slot === 'arms' ? 'arm' : 'leg'}: fit a replacement` : 'Natural'}</span>
         <span class="slot-actions">
           ${aug && slot !== 'arms' && slot !== 'legs' ? `<button class="ghost" data-action="remove" data-slot="${slot}">Remove</button>` : ''}
@@ -426,6 +441,8 @@ function agentView(agentId: string, openSlot?: Slot) {
   }).join('');
 
   const traits = agentTraits(agent);
+  const preview = inspect ? AUGMENTS.find((a) => a.id === inspect) : undefined;
+  const previewAgent: Agent = preview ? { ...agent, augments: { ...agent.augments, [preview.slot]: preview.id } } : agent;
 
   return `
   <main class="agent-screen">
@@ -436,7 +453,11 @@ function agentView(agentId: string, openSlot?: Slot) {
     <div class="two-col">
       <section class="panel body">
         <h2>Body</h2>
-        <p class="muted small">Swapping an augment destroys the old one. Lost limbs can only be fixed by fitting something in that slot.</p>
+        <div class="figure-wrap">
+          ${bodyFigure(previewAgent, { highlight: openSlot })}
+          ${preview ? `<span class="preview-tag">PREVIEW · ${esc(preview.name.toUpperCase())}</span>` : ''}
+        </div>
+        <p class="muted small">Tap an augment's plate to inspect it and preview it on ${esc(agent.name)}. Swapping an augment destroys the old one. Lost limbs can only be fixed by fitting something in that slot.</p>
         ${slots}
       </section>
       <section class="panel readout">
@@ -773,7 +794,7 @@ function render() {
   let body: string;
   switch (screen.name) {
     case 'hq': body = hqView(); break;
-    case 'agent': body = agentView(screen.agentId, screen.slot); break;
+    case 'agent': body = agentView(screen.agentId, screen.slot, screen.inspect); break;
     case 'plan': body = planView(screen.contractId); break;
     case 'debrief': body = debriefView(screen.index, screen.instant); break;
     case 'codex': body = codexView(); break;
@@ -807,12 +828,15 @@ app.addEventListener('click', (event) => {
       return go({ name: 'hq' });
     case 'open-agent': return go({ name: 'agent', agentId: id! });
     case 'toggle-slot':
-      if (screen.name === 'agent') screen = { ...screen, slot: screen.slot === slot ? undefined : (slot as Slot) };
+      if (screen.name === 'agent') screen = { ...screen, slot: screen.slot === slot ? undefined : (slot as Slot), inspect: undefined };
+      break;
+    case 'inspect':
+      if (screen.name === 'agent') screen = { ...screen, inspect: screen.inspect === id ? undefined : id };
       break;
     case 'install':
       if (screen.name === 'agent') {
         const aug = AUGMENTS.find((a) => a.id === id);
-        if (apply(installAugment(game, screen.agentId, id!), `${aug?.name} installed.`)) screen = { ...screen, slot: undefined };
+        if (apply(installAugment(game, screen.agentId, id!), `${aug?.name} installed.`)) screen = { ...screen, slot: undefined, inspect: undefined };
       }
       break;
     case 'remove':

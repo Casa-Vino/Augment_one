@@ -176,3 +176,38 @@ export function briefingLine(type: MissionType, target: string, seed: number): s
 export function rivalLine(rival: Agent): string {
   return `Intercepts mention a ${RIVAL_SYNDICATE} operative on the same site: ${rival.name}, codename “${rival.codename}”.`;
 }
+
+export interface AugmentLore {
+  maker: string;
+  model: string;
+  line: string;
+}
+
+/** Who makes each augment, its model number and a line of catalogue copy. */
+export const AUGMENT_LORE: Record<string, AugmentLore> = {
+  'reflex-booster': { maker: 'Orchid Arms', model: 'OA-C3 “Quickstep”', line: 'A synaptic sleeve on the cervical spine that fires motor commands before the brain finishes deciding.' },
+  'hack-interface': { maker: 'Meridian Grid', model: 'MG-TP4 Temporal Port', line: 'A temporal-lobe port that lets the wearer talk to locks, cameras and doors the way they talk to people: badly, at first.' },
+  'tactical-coprocessor': { maker: 'Aldane Security', model: 'AS-TCP7', line: 'Fourteen threads running threat models in parallel. Users report dreaming in probability trees.' },
+  'sentinel-overclock': { maker: 'Orchid Arms', model: 'OA-S1 Sentinel', line: 'Military neural lace, clocked well past the safety margin. Not licensed for civilian sale. Not that anyone asks.' },
+  'empathy-suite': { maker: 'Tessera Holdings', model: 'TH-E2 Confidant', line: 'Reads micro-expressions and pheromones in four hundredths of a second. Negotiators love it. Spouses do not.' },
+  'thermal-optics': { maker: 'Aldane Security', model: 'AS-IR9 Heatsight', line: 'A microbolometer behind the cornea. Sees body heat through drywall and smoke.' },
+  'smart-targeting': { maker: 'Orchid Arms', model: 'OA-BX2 Ballistic Eye', line: 'Range, drop and windage, solved and painted on the retina before the trigger finger moves.' },
+  'threat-tagger': { maker: 'Aldane Security', model: 'AS-TT3 Overwatch', line: 'Tags every face in view as friend, foe or unknown, and remembers the unknowns.' },
+  'dermal-plating': { maker: 'Vantage Logistics', model: 'VL-DP4 Carapace', line: 'Ceramic-aramid plates grown under the skin. Stops a pistol round. Sets off every metal detector in the city.' },
+  'energy-converter': { maker: 'Meridian Grid', model: 'MG-BC60 Reservoir', line: 'Three biocells that turn glucose into the current your other augments are always hungry for.' },
+  'cooling-loop': { maker: 'Halcyon Biotech', model: 'HB-CL1 Stillwater', line: 'A subcutaneous coolant loop that dumps implant heat and keeps the wearer cold on thermal cameras.' },
+  'titan-frame': { maker: 'Vantage Logistics', model: 'VL-T9 Titan', line: 'Full skeletal reinforcement, originally designed for dock workers. The dock workers unionised against it.' },
+  'sedative-mist': { maker: 'Kestrel Pharma', model: 'KP-SD4 Lullaby', line: 'Chest vents release a fast sedative in close quarters. The wearer is immune. Usually.' },
+  'strength-frame': { maker: 'Vantage Logistics', model: 'VL-H24 Longshore', line: 'Hydraulic pistons along both forearms. Lifts a car door, or a wounded friend, without strain.' },
+  'recoil-dampers': { maker: 'Orchid Arms', model: 'OA-G18 Steadyhand', line: 'Wrist gyroscopes spinning at eighteen thousand rpm. The arm stays still when the world does not.' },
+  'nano-blade': { maker: 'Black market', model: 'Unbranded mono-edge', line: 'A retractable blade with a single-molecule edge. Nobody admits to making these.' },
+  'arc-gloves': { maker: 'Kestrel Pharma', model: 'KP-A9 Soft Touch', line: 'Nine kilovolts at the fingertips, tuned to knock people out instead of down. Sold as “crowd care”.' },
+  'prosthetic-arm': { maker: 'Halcyon Biotech', model: 'HB-M1 Standard', line: 'A medical-grade replacement arm. It works. That is all it does.' },
+  'sprint-servos': { maker: 'Orchid Arms', model: 'OA-K6 Stride', line: 'Knee servos and calf pistons for bursts of speed. The motors whine, loudly enough to matter.' },
+  'silent-stride': { maker: 'Tessera Holdings', model: 'TH-F1 Hush', line: 'Gel pads and active damping in the soles. Footfalls drop to almost nothing.' },
+  'jump-assist': { maker: 'Vantage Logistics', model: 'VL-J3 Updraft', line: 'Coiled calf springs that store and release energy: rooftops up, six-metre drops down, both in silence.' },
+  'prosthetic-leg': { maker: 'Halcyon Biotech', model: 'HB-M2 Standard', line: 'A medical-grade replacement leg. Reliable, unremarkable, paid for by insurance, if you have any.' },
+  'glass-shield': { maker: 'Black market', model: 'Glass-shield, gen 3', line: 'A skin of light-bending cells that turns the wearer into a ripple. Drinks power like a thirsty child.' },
+  'social-camo': { maker: 'Tessera Holdings', model: 'TH-SC5 Everyman', line: 'Shifts facial geometry and posture just enough that cameras and people fail to make a match.' },
+  'toxin-filter': { maker: 'Kestrel Pharma', model: 'KP-TF2 Breathe', line: 'An epidermal mesh and lung filters that shrug off gas, smoke and most of what is in a combat drug.' },
+};

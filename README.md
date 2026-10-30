@@ -28,6 +28,7 @@ Every finished version is kept on a `release/vN` branch. On each push to `main`,
 | v1 | The core loop: augments, budgets, missions, forecast, debrief. |
 | v2 | Optional lore and codex; personalities, earned traits and bonds; non-lethal missions; rival operatives you can capture and recruit; installable app. |
 | v3 | City map of eight districts with influence and control; sleeper agents; the Night Market Calyx run; animated after-action replays in every debrief. |
+| v4 | Augment art: a technical plate for every augment with maker, model and lore; an anatomical body figure that shows every fitted augment, with live preview while inspecting. |
 
 ## How it plays
 
@@ -78,6 +79,7 @@ Client briefings, rival intercepts, agent biographies and a codex that fills in 
 | `src/sim/campaign.ts` | Campaign state and player actions (install, research, recruit, deploy, captives), traits and bonds. Pure functions. |
 | `src/sim/lore.ts` | Codex entries, biographies and briefing lines. No effect on the simulation. |
 | `src/ui/replay.ts` | Canvas renderer for the after-action replay. |
+| `src/ui/augart.ts` | SVG augment plates and the anatomical body figure. |
 | `src/ui/` | Browser UI, plain TypeScript with no framework. |
 | `scripts/balance.ts` | Runs thousands of missions with preset teams and prints success rates. |
 | `tests/` | Vitest unit tests for the simulation. |

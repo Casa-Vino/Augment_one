@@ -279,6 +279,26 @@ button.card:hover { border-color: var(--gold); filter: none; }
 .calyx-actions { display: grid; gap: 0.5rem; }
 .card.runner { display: flex; flex-direction: column; gap: 0.2rem; width: auto; min-width: 180px; }
 
+/* v4: augment plates and the body figure */
+.figure-wrap { position: relative; display: flex; justify-content: center; margin: 0.25rem 0 0.75rem; }
+.body-figure { width: 100%; max-width: 360px; height: auto; }
+.preview-tag { position: absolute; top: 0.25rem; left: 0; font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--stealth); letter-spacing: 0.1em; }
+.plate { display: block; border: 1px solid var(--line); }
+.option { align-items: flex-start; }
+.option .thumb { padding: 0; background: none; border: none; flex-shrink: 0; cursor: zoom-in; }
+.option.inspecting { flex-wrap: wrap; }
+.option.inspecting .thumb { cursor: zoom-out; }
+.option.inspecting .thumb .plate { border-color: var(--gold-dim); }
+.opt-main { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 0.2rem; }
+.opt-title { display: flex; align-items: center; gap: 0.5rem; }
+.opt-name { color: var(--text); }
+.opt-action { margin-top: 0.4rem; }
+.maker { margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; color: #c79a4f; letter-spacing: 0.04em; }
+.spec { color: var(--muted); margin: 0.2rem 0 0; font-family: 'JetBrains Mono', monospace; }
+.slot-name { display: inline-flex; align-items: center; gap: 0.5rem; }
+.slot-thumb .plate { width: 40px; height: 40px; }
+.slot-head { grid-template-columns: 110px 1fr auto; }
+
 @media (max-width: 860px) {
   .city-grid { grid-template-columns: 1fr; }
   .stop { grid-template-columns: 1fr 70px 44px; }

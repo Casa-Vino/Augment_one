@@ -59,13 +59,15 @@ export interface Agent {
   kills: number;
   history: string[];
   /** Sleepers are embedded in a district; missing agents were burned and taken. */
-  status: 'active' | 'kia' | 'sleeper' | 'missing';
+  status: 'active' | 'kia' | 'sleeper' | 'missing' | 'transit';
   /** Trait ids: one personality from the start, plus perks and quirks earned in the field. */
   traits: string[];
   record: AgentRecord;
   origin: 'founder' | 'recruit' | 'captive';
   /** Codename, for rival operatives. */
   codename?: string;
+  /** Extended mode: the city the agent is in. */
+  location?: string;
 }
 
 export interface Trait {
@@ -116,6 +118,8 @@ export interface Contract {
   rival?: Agent;
   /** The client pays this bonus if nobody is killed. */
   cleanBonus?: number;
+  /** Extended mode: a site condition that changes how augments perform. */
+  condition?: 'emp' | 'scanners' | 'crowd' | 'rain' | 'blackout';
 }
 
 /** What a log line shows in the after-action replay. Agents are referred to by id. */

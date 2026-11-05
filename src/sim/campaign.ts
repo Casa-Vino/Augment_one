@@ -3,7 +3,7 @@
 import { agentTraits, createAgent, derive, EMPTY_RECORD, needsDose } from './agent';
 import {
   AGENT_NAMES, AUGMENTS, AUGMENT_BY_ID, CAMPAIGN_LENGTH, CLEAN_BONUS_RATE, CLIENTS, HEAL_PER_TURN, MAX_CAPTIVES, MAX_ROSTER, MAX_SQUAD,
-  CONTROL_AT, LOSE_CONTROL_BELOW, MISSIONS, PERSONALITIES, PRICES, REGIONS, REGION_BY_ID, RESEARCH, RIVAL_CODENAMES, RIVAL_NAMES, RIVAL_SYNDICATE, SLOTS,
+  CITIES, CITIES_TO_WIN, CITY_BY_ID, CITY_CONTROL_DISTRICTS, cityOfRegion, CONDITIONS, CONTROL_AT, EXTENDED_LENGTH, HOME_CITY, LOSE_CONTROL_BELOW, SAFEHOUSE_COST, MISSIONS, PERSONALITIES, PRICES, REGIONS, REGION_BY_ID, RESEARCH, RIVAL_CODENAMES, RIVAL_NAMES, RIVAL_SYNDICATE, SLOTS,
   TARGET_SITES, TRAIT_BY_ID,
 } from './data';
 import { CLIENT_CODEX } from './lore';
@@ -62,7 +62,13 @@ export interface CampaignState {
   news: string[];
   /** Turn of the last Calyx run; one run per turn. */
   calyxTurn: number;
+  /** Casual is the original game; extended adds the world map and everything after it. */
+  mode: GameMode;
+  /** Extended mode: cities where you can take contracts. */
+  safehouses: string[];
 }
+
+export type GameMode = 'casual' | 'extended';
 
 export interface SquadOrder {
   agentId: string;
@@ -81,7 +87,7 @@ const fail = (error: string): Outcome => ({ ok: false, error });
 
 export const DEFAULT_ORDERS: MissionOrders = { rules: 'lethal', rivalOrders: 'avoid' };
 
-export function newCampaign(seed: number): CampaignState {
+export function newCampaign(seed: number, mode: GameMode = 'casual'): CampaignState {
   const rng = createRng(hashSeed(seed, 'roster'));
   const names = rng.shuffle(AGENT_NAMES);
   const personalities = rng.shuffle(PERSONALITIES);
@@ -93,7 +99,7 @@ export function newCampaign(seed: number): CampaignState {
     rp: 0,
     standing: 0,
     research: [],
-    roster: names.slice(0, 4).map((name, i) => createAgent(`a${i + 1}`, name, personalities[i])),
+    roster: names.slice(0, 4).map((name, i) => ({ ...createAgent(`a${i + 1}`, name, personalities[i]), ...(mode === 'extended' ? { location: HOME_CITY } : {}) })),
     contracts: [],
     history: [],
     nextId: 5,
@@ -106,7 +112,10 @@ export function newCampaign(seed: number): CampaignState {
     sleepers: [],
     news: [],
     calyxTurn: 0,
+    mode,
+    safehouses: [HOME_CITY],
   };
+  if (mode === 'extended') state.money = 8000;
   state.contracts = generateContracts(state);
   return state;
 }
@@ -115,9 +124,9 @@ export function newCampaign(seed: number): CampaignState {
 export function migrate(saved: unknown): CampaignState | null {
   const s = saved as Partial<CampaignState> & { version?: number };
   if (!s || typeof s !== 'object') return null;
-  if (s.version === 3) return s as CampaignState;
+  if (s.version === 3) return { ...(s as CampaignState), mode: s.mode ?? 'casual', safehouses: s.safehouses ?? [HOME_CITY] };
   if (s.version === 2) {
-    const v3: CampaignState = { ...(s as CampaignState), version: 3, influence: {}, owned: [], sleepers: [], news: [], calyxTurn: 0 };
+    const v3: CampaignState = { ...(s as CampaignState), version: 3, influence: {}, owned: [], sleepers: [], news: [], calyxTurn: 0, mode: 'casual', safehouses: [HOME_CITY] };
     v3.contracts = generateContracts(v3);
     return v3;
   }
@@ -152,6 +161,7 @@ function makeRival(rng: Rng, id: string, difficulty: number): Agent {
 
 /** Four contracts a turn, each in a different district of the city map. */
 export function generateContracts(state: CampaignState): Contract[] {
+  if (state.mode === 'extended') return (state.safehouses ?? [HOME_CITY]).flatMap((cityId) => cityContracts(state, cityId));
   const rng = createRng(hashSeed(state.seed, 'contracts', state.turn));
   const types = Object.keys(MISSIONS) as MissionType[];
   const regions = rng.shuffle(REGIONS).slice(0, 4);
@@ -170,6 +180,38 @@ export function generateContracts(state: CampaignState): Contract[] {
   });
 }
 
+/** Extended mode: three contracts a turn in each city with a safehouse, some with site conditions. */
+export function cityContracts(state: CampaignState, cityId: string): Contract[] {
+  const city = CITY_BY_ID.get(cityId)!;
+  const rng = createRng(hashSeed(state.seed, 'contracts', state.turn, cityId));
+  const types = Object.keys(MISSIONS) as MissionType[];
+  const conditions = Object.keys(CONDITIONS) as NonNullable<Contract['condition']>[];
+  const base = 1 + Math.floor((state.turn - 1) * 0.12);
+  return rng.shuffle(city.regions).slice(0, 3).map((region, i) => {
+    const type = rng.pick(types);
+    // Harder cities start one step gentler; their threat still climbs faster than home's.
+    const difficulty = Math.max(1, Math.min(5, base + region.offset - (city.tier > 0 ? 1 : 0) + rng.int(-1, 0)));
+    const payout = Math.round(((1100 + 900 * difficulty) * MISSIONS[type].payoutMult) / 50) * 50;
+    const contract: Contract = {
+      id: `t${state.turn}${cityId}${i}`, type, difficulty, client: rng.pick(CLIENTS), target: `${rng.pick(TARGET_SITES)} in ${region.name}, ${city.name}`, payout, regionId: region.id,
+    };
+    if (rng.chance(0.4)) contract.cleanBonus = Math.round((payout * CLEAN_BONUS_RATE) / 50) * 50;
+    if (rng.chance(0.5)) contract.condition = rng.pick(conditions);
+    const rivalChance = Math.min(0.6, 0.08 + state.turn * 0.015 + city.tier * 0.05 + (region.lantern ? 0.15 : 0));
+    if (state.turn > 1 && rng.chance(rivalChance)) contract.rival = makeRival(rng, `r${state.turn}${cityId}${i}`, difficulty);
+    return contract;
+  });
+}
+
+export function campaignLength(state: CampaignState): number {
+  return state.mode === 'extended' ? EXTENDED_LENGTH : CAMPAIGN_LENGTH;
+}
+
+/** Cities where you hold enough districts to call the city yours. */
+export function controlledCities(state: CampaignState): string[] {
+  return CITIES.filter((c) => c.regions.filter((r) => state.owned.includes(r.id)).length >= CITY_CONTROL_DISTRICTS).map((c) => c.id);
+}
+
 export function toleranceBonus(state: CampaignState): number {
   return RESEARCH.filter((r) => state.research.includes(r.id)).reduce((sum, r) => sum + (r.toleranceBonus ?? 0), 0);
 }
@@ -183,8 +225,11 @@ export function livingAgents(state: CampaignState): Agent[] {
   return state.roster.filter((a) => a.status === 'active');
 }
 
-export function isFinished(state: CampaignState): 'won' | 'lost' | null {
-  if (state.turn > CAMPAIGN_LENGTH) return 'won';
+export function isFinished(state: CampaignState): 'won' | 'lost' | 'timeout' | null {
+  if (state.mode === 'extended') {
+    if (controlledCities(state).length >= CITIES_TO_WIN) return 'won';
+    if (state.turn > EXTENDED_LENGTH) return 'timeout';
+  } else if (state.turn > CAMPAIGN_LENGTH) return 'won';
   if (!livingAgents(state).length && state.money < PRICES.recruit) return 'lost';
   return null;
 }
@@ -226,15 +271,16 @@ export function removeAugment(state: CampaignState, agentId: string, slot: Slot)
   });
 }
 
-export function recruit(state: CampaignState): Outcome {
+export function recruit(state: CampaignState, cityId: string = HOME_CITY): Outcome {
   return edit(state, (s) => {
+    if (s.mode === 'extended' && !s.safehouses.includes(cityId)) return 'You need a safehouse there first.';
     if (livingAgents(s).length >= MAX_ROSTER) return `The roster is full (${MAX_ROSTER}).`;
     if (s.money < PRICES.recruit) return 'Not enough credits.';
     const used = new Set(s.roster.map((a) => a.name));
     const rng = createRng(hashSeed(s.seed, 'recruit', s.nextId));
     const name = rng.pick(AGENT_NAMES.filter((n) => !used.has(n)).concat(used.size >= AGENT_NAMES.length ? [`Recruit ${s.nextId}`] : []));
     s.money -= PRICES.recruit;
-    s.roster.push(createAgent(`a${s.nextId}`, name, rng.pick(PERSONALITIES), 'recruit'));
+    s.roster.push({ ...createAgent(`a${s.nextId}`, name, rng.pick(PERSONALITIES), 'recruit'), ...(s.mode === 'extended' ? { location: cityId } : {}) });
     s.nextId++;
   });
 }
@@ -268,8 +314,9 @@ export function missionSeed(state: CampaignState, contractId: string): number {
 }
 
 export function weeklyCosts(state: CampaignState): number {
-  const paid = state.roster.filter((a) => a.status === 'active' || a.status === 'sleeper').length;
-  return paid * PRICES.upkeepPerAgent + state.captives.length * PRICES.holdingPerCaptive;
+  const paid = state.roster.filter((a) => a.status === 'active' || a.status === 'sleeper' || a.status === 'transit').length;
+  const safehouses = state.mode === 'extended' ? Math.max(0, state.safehouses.length - 1) * PRICES.safehouseUpkeep : 0;
+  return paid * PRICES.upkeepPerAgent + state.captives.length * PRICES.holdingPerCaptive + safehouses;
 }
 
 export function districtIncome(state: CampaignState): number {
@@ -299,6 +346,10 @@ export function burnChance(state: CampaignState, agent: Agent, turnsIn: number):
 
 /** Everything that happens between turns: income, sleepers, healing, new contracts. */
 function endTurn(s: CampaignState, deployed: Set<string>, news: string[]) {
+  for (const agent of s.roster.filter((a) => a.status === 'transit')) {
+    agent.status = 'active';
+    news.push(`${agent.name} arrived in ${CITY_BY_ID.get(agent.location ?? HOME_CITY)?.name}.`);
+  }
   const income = districtIncome(s);
   if (income) {
     s.money += income;
@@ -411,6 +462,9 @@ export function deploy(state: CampaignState, contractId: string, squad: SquadOrd
     if (squad.length > MAX_SQUAD) return `A squad is at most ${MAX_SQUAD} agents.`;
     const agents = squad.map((o) => s.roster.find((a) => a.id === o.agentId));
     if (agents.some((a) => !a || a.status !== 'active')) return 'One of those agents is not available.';
+    if (s.mode === 'extended' && contract.regionId && agents.some((a) => (a!.location ?? HOME_CITY) !== cityOfRegion(contract.regionId!))) {
+      return 'Every agent on the squad has to be in that city.';
+    }
     const doses = doseCost(squad);
     if (doses > s.money) return 'Not enough credits for the Calyx doses.';
     s.money -= doses;
@@ -514,6 +568,7 @@ export function placeSleeper(state: CampaignState, agentId: string, regionId: st
     if (!agent || agent.status !== 'active') return 'Agent not available.';
     if (!REGION_BY_ID.has(regionId)) return 'Unknown district.';
     if (s.sleepers.some((x) => x.regionId === regionId)) return 'You already have someone embedded there.';
+    if (s.mode === 'extended' && (agent.location ?? HOME_CITY) !== cityOfRegion(regionId)) return 'That agent is in another city.';
     if (livingAgents(s).length <= 1) return 'Keep at least one agent at home.';
     agent.status = 'sleeper';
     s.sleepers.push({ agentId, regionId, since: s.turn });
@@ -610,7 +665,7 @@ export function offerPlace(state: CampaignState, agentId: string): { outcome: Ou
     accepted = createRng(hashSeed(s.seed, 'persuade', agentId, s.turn)).chance(persuadeChance(s));
     if (!accepted) return;
     s.captives = s.captives.filter((c) => c !== captive);
-    const agent = { ...captive.agent, id: `a${s.nextId}`, origin: 'captive' as const, hp: Math.max(captive.agent.hp, 60) };
+    const agent = { ...captive.agent, id: `a${s.nextId}`, origin: 'captive' as const, hp: Math.max(captive.agent.hp, 60), ...(s.mode === 'extended' ? { location: HOME_CITY } : {}) };
     agent.history = [`Turn ${s.turn}: left ${RIVAL_SYNDICATE} and joined your syndicate.`];
     s.nextId++;
     s.roster.push(agent);
@@ -620,7 +675,36 @@ export function offerPlace(state: CampaignState, agentId: string): { outcome: Ou
 
 export function score(state: CampaignState): number {
   const wins = state.history.filter((h) => h.result.success).length;
-  return wins * 1000 + Math.max(0, state.money) + livingAgents(state).length * 500 + state.standing * 250 + state.owned.length * 1500;
+  return wins * 1000 + Math.max(0, state.money) + livingAgents(state).length * 500 + state.standing * 250 + state.owned.length * 1500 + controlledCities(state).length * 5000;
+}
+
+// --- Extended mode: safehouses and travel -------------------------------------------
+
+export function openSafehouse(state: CampaignState, cityId: string): Outcome {
+  return edit(state, (s) => {
+    if (s.mode !== 'extended') return 'Only in the extended campaign.';
+    if (!CITY_BY_ID.has(cityId)) return 'Unknown city.';
+    if (s.safehouses.includes(cityId)) return 'You already have a safehouse there.';
+    if (s.money < SAFEHOUSE_COST) return 'Not enough credits.';
+    s.money -= SAFEHOUSE_COST;
+    s.safehouses.push(cityId);
+    s.contracts.push(...cityContracts(s, cityId));
+  });
+}
+
+/** Send an agent to another safehouse. They are unavailable until the next turn. */
+export function travel(state: CampaignState, agentId: string, cityId: string): Outcome {
+  return edit(state, (s) => {
+    const agent = s.roster.find((a) => a.id === agentId);
+    if (!agent || agent.status !== 'active') return 'Agent not available.';
+    if (!s.safehouses.includes(cityId)) return 'You need a safehouse there first.';
+    if ((agent.location ?? HOME_CITY) === cityId) return 'Already there.';
+    if (s.money < PRICES.travel) return 'Not enough credits.';
+    s.money -= PRICES.travel;
+    agent.status = 'transit';
+    agent.location = cityId;
+    agent.history.push(`Turn ${s.turn}: travelled to ${CITY_BY_ID.get(cityId)!.name}.`);
+  });
 }
 
 export function describeTraits(agent: Agent): string {

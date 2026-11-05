@@ -29,6 +29,7 @@ Every finished version is kept on a `release/vN` branch. On each push to `main`,
 | v2 | Optional lore and codex; personalities, earned traits and bonds; non-lethal missions; rival operatives you can capture and recruit; installable app. |
 | v3 | City map of eight districts with influence and control; sleeper agents; the Night Market Calyx run; animated after-action replays in every debrief. |
 | v4 | Augment art: a technical plate for every augment with maker, model and lore; an anatomical body figure that shows every fitted augment, with live preview while inspecting. |
+| v5 | Main menu with two modes. **Casual** is the game as it was. **Extended campaign** (new): four cities on a world map, safehouses, travel between cities, site conditions (EMP, scanner gates, crowds, rain, blackout) and a 40-turn goal of holding three cities. |
 
 ## How it plays
 

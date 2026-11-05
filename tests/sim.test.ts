@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createAgent, derive, malfunctionChance } from '../src/sim/agent';
-import { calyxStops, deploy, installAugment, migrate, newCampaign, offerPlace, placeSleeper, recallSleeper, rest, runCalyx, startResearch } from '../src/sim/campaign';
+import { calyxStops, controlledCities, deploy, installAugment, isFinished, migrate, newCampaign, offerPlace, openSafehouse, placeSleeper, recallSleeper, rest, runCalyx, startResearch, travel } from '../src/sim/campaign';
+import { CITIES } from '../src/sim/data';
 import { resolveMission } from '../src/sim/mission';
 import { createRng } from '../src/sim/rng';
 import type { Agent, Contract } from '../src/sim/types';
@@ -205,5 +206,56 @@ describe('v3: the city map', () => {
     const caught = stops.slice(0, 3).some((x) => x.caught);
     expect(r.state.money - s.money).toBe(caught ? 0 : stops.slice(0, 3).reduce((a, x) => a + x.reward, 0));
     expect(runCalyx(r.state, id, 1).ok).toBe(false);
+  });
+});
+
+describe('v5: extended mode', () => {
+  it('casual mode is unchanged: four contracts in Neue Halle, ten turns', () => {
+    const s = newCampaign(30);
+    expect(s.mode).toBe('casual');
+    expect(s.contracts).toHaveLength(4);
+    expect(s.contracts.every((c) => !c.condition)).toBe(true);
+  });
+
+  it('extended mode starts in one city and grows with safehouses', () => {
+    const s = newCampaign(31, 'extended');
+    expect(s.contracts).toHaveLength(3);
+    expect(s.roster.every((a) => a.location === 'neue')).toBe(true);
+    const r = openSafehouse(s, 'ostrava');
+    if (!r.ok) throw new Error(r.error);
+    expect(r.state.contracts.filter((c) => c.regionId!.startsWith('ostrava-'))).toHaveLength(3);
+  });
+
+  it('agents travel between safehouses and arrive next turn', () => {
+    const opened = openSafehouse(newCampaign(32, 'extended'), 'lagos');
+    if (!opened.ok) throw new Error(opened.error);
+    const id = opened.state.roster[0].id;
+    const moved = travel(opened.state, id, 'lagos');
+    if (!moved.ok) throw new Error(moved.error);
+    expect(moved.state.roster[0].status).toBe('transit');
+    const next = rest(moved.state);
+    if (!next.ok) throw new Error(next.error);
+    expect(next.state.roster[0]).toMatchObject({ status: 'active', location: 'lagos' });
+  });
+
+  it('refuses a squad that is in the wrong city', () => {
+    const opened = openSafehouse(newCampaign(33, 'extended'), 'lagos');
+    if (!opened.ok) throw new Error(opened.error);
+    const lagosJob = opened.state.contracts.find((c) => c.regionId!.startsWith('lagos-'))!;
+    const r = deploy(opened.state, lagosJob.id, [{ agentId: opened.state.roster[0].id, drugs: NONE, dosed: false }]);
+    expect(r.ok).toBe(false);
+  });
+
+  it('wins by controlling three cities', () => {
+    const s = newCampaign(34, 'extended');
+    s.owned = CITIES.slice(0, 3).flatMap((c) => c.regions.slice(0, 5).map((r) => r.id));
+    expect(controlledCities(s)).toHaveLength(3);
+    expect(isFinished(s)).toBe('won');
+  });
+
+  it('an EMP field shuts powered augments down from the start', () => {
+    const contract: Contract = { id: 'e', type: 'infiltration', difficulty: 1, client: 'X', target: 'Y', payout: 1000, condition: 'emp' };
+    const r = resolveMission({ contract, squad: [{ agent: withAugs({ skin: 'glass-shield' }), drugs: NONE, dosed: false }], toleranceBonus: 0, seed: 1 });
+    expect(r.log.some((l) => l.text.startsWith('Site condition: EMP field'))).toBe(true);
   });
 });

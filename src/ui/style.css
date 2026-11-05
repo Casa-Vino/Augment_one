@@ -299,6 +299,41 @@ button.card:hover { border-color: var(--gold); filter: none; }
 .slot-thumb .plate { width: 40px; height: 40px; }
 .slot-head { grid-template-columns: 110px 1fr auto; }
 
+/* v5: main menu, world map, extended mode */
+.menu { max-width: 1040px; display: grid; grid-template-columns: 1.25fr 1fr; gap: 1.25rem; padding-top: 3rem; }
+.menu-title { grid-column: 1 / -1; margin-bottom: 1rem; }
+.menu-kicker { color: #c79a4f; letter-spacing: 0.3em; font-size: 0.8rem; margin: 0; }
+.menu-title h1 { font-size: clamp(3.5rem, 12vw, 7.5rem); line-height: 0.95; letter-spacing: 0.22em; margin: 0.4rem 0; }
+.menu-tag { font-size: 1.35rem; color: #d8cfbf; font-style: italic; margin: 0; }
+.menu-mode { background: var(--panel); border: 1px solid var(--line); border-top: 2px solid var(--gold-dim); padding: 1.25rem; border-radius: var(--radius); }
+.menu-mode.casual { border-top-color: var(--gold); }
+.menu-mode h2 { border: none; padding: 0; display: flex; align-items: center; gap: 0.6rem; }
+.menu-mode.casual h2 { font-size: 1.5rem; }
+.menu-actions { display: grid; gap: 0.6rem; margin-top: 1rem; }
+.menu-actions button { padding: 0.65rem 1rem; text-align: left; }
+.menu-actions button.primary { text-align: left; letter-spacing: 0.12em; }
+.menu-actions small { display: block; font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; letter-spacing: 0; text-transform: none; opacity: 0.85; margin-top: 0.15rem; }
+.menu-links { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 1.5rem; align-items: center; padding-top: 0.5rem; }
+.menu-links a { color: var(--gold); }
+.mode-tag { font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; letter-spacing: 0.2em; color: var(--stealth); border: 1px solid rgba(79, 163, 199, 0.5); padding: 0.1rem 0.4rem; }
+.hq .world { grid-column: 1 / -1; }
+.worldmap { width: 100%; height: auto; display: block; background: #0d0c09; border: 1px solid var(--line); }
+.worldmap .lat { stroke: #17140f; }
+.worldmap .land { fill: #15130e; stroke: #2b261d; }
+.worldmap .route { stroke: #3a3222; stroke-dasharray: 3 6; }
+.worldmap .route.open { stroke: var(--gold); stroke-dasharray: 6 4; }
+.worldmap .city { cursor: pointer; outline: none; }
+.worldmap .halo { fill: transparent; stroke: transparent; }
+.worldmap .city.sel .halo, .worldmap .city:focus-visible .halo { stroke: var(--gold); stroke-dasharray: 4 4; }
+.worldmap .node { fill: #0b0a08; stroke: var(--muted); stroke-width: 2; }
+.worldmap .city.safe .node { fill: var(--gold); stroke: var(--gold); }
+.worldmap .node.held { fill: var(--good); stroke: var(--good); }
+.worldmap .cname { fill: var(--text); font: 700 15px Rajdhani, sans-serif; letter-spacing: 0.12em; pointer-events: none; }
+.worldmap .cinf { fill: var(--muted); font: 600 11px 'JetBrains Mono', monospace; pointer-events: none; }
+.loc { margin: 0.1rem 0 0; font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; color: var(--stealth); }
+.tag.cond { color: #c08af0; border-color: rgba(192, 138, 240, 0.6); }
+.condition { display: flex; gap: 0.6rem; align-items: center; margin: 0.4rem 0; }
+
 @media (max-width: 860px) {
   .city-grid { grid-template-columns: 1fr; }
   .stop { grid-template-columns: 1fr 70px 44px; }
@@ -312,4 +347,5 @@ button.card:hover { border-color: var(--gold); filter: none; }
   .topbar { gap: 0.6rem 1rem; padding: 0.6rem 1rem; }
   .top-actions button { padding: 0.25rem 0.55rem; font-size: 0.85rem; }
   .picks { grid-template-columns: 1fr; }
+  .menu { grid-template-columns: 1fr; padding-top: 1.5rem; }
 }

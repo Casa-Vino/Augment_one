@@ -154,6 +154,9 @@ export const PRICES = {
   dose: 250,
   upkeepPerAgent: 150,
   holdingPerCaptive: 100,
+  /** Extended mode. */
+  safehouseUpkeep: 200,
+  travel: 200,
 };
 
 export const HEAL_PER_TURN = 30;
@@ -222,7 +225,74 @@ export const REGIONS: Region[] = [
   { id: 'under', name: 'Undercity', blurb: 'The levels below the levels. Nobody asks, nobody tells.', offset: 1, income: 300, lantern: true, points: '280,340 520,360 760,380 760,480 360,480 340,370', label: [560, 428] },
 ];
 
-export const REGION_BY_ID = new Map(REGIONS.map((r) => [r.id, r]));
+export interface City {
+  id: string;
+  name: string;
+  blurb: string;
+  /** Added to contract difficulty and district income (×100). */
+  tier: number;
+  /** Position on the 800×420 world map. */
+  pos: [number, number];
+  regions: Region[];
+}
+
+/** Builds a city's districts from the Neue Halle layout, renamed and optionally mirrored. */
+function cityRegions(cityId: string, names: string[], lantern: number[], tier: number, flip: boolean): Region[] {
+  return REGIONS.map((r, i) => ({
+    ...r,
+    id: `${cityId}-${r.id}`,
+    name: names[i],
+    offset: r.offset + tier,
+    income: r.income + 100 * tier,
+    lantern: lantern.includes(i),
+    points: flip ? r.points.split(' ').map((pt) => { const [x, y] = pt.split(','); return `${800 - Number(x)},${y}`; }).join(' ') : r.points,
+    label: flip ? [800 - r.label[0], r.label[1]] : r.label,
+  }));
+}
+
+export const HOME_CITY = 'neue';
+
+/** Extended mode's world. Neue Halle keeps the casual game's districts. */
+export const CITIES: City[] = [
+  { id: 'neue', name: 'Neue Halle', blurb: 'Your home city: smog, towers and a syndicate on every corner.', tier: 0, pos: [380, 170], regions: REGIONS },
+  {
+    id: 'ostrava', name: 'Port Ostrava', blurb: 'A cold port city of cathedrals and container cranes. Black Lantern runs the harbour.', tier: 1, pos: [470, 120],
+    regions: cityRegions('ostrava', ['Signal Hill', 'Cathedral Stacks', 'Glass Harbour', 'Tannery Row', 'Freightline', 'Mercy Ward', 'Saltworks', 'The Sumps'], [2, 6, 7], 1, true),
+  },
+  {
+    id: 'lagos', name: 'Lagos Spire', blurb: 'A vertical city of a hundred levels, built around one impossible tower.', tier: 1, pos: [400, 290],
+    regions: cityRegions('lagos', ['Antenna Ridge', 'The Crown', 'Garden Decks', 'Market Spiral', 'Lift Core', 'Halcyon Wing', 'Lagoon Piers', 'The Roots'], [1, 4, 7], 1, false),
+  },
+  {
+    id: 'kowloon', name: 'Kowloon Reach', blurb: 'Neon, typhoons and Black Lantern’s headquarters. Nobody takes this city by accident.', tier: 2, pos: [650, 200],
+    regions: cityRegions('kowloon', ['Dish Terraces', 'Jade Heights', 'Sky Gardens', 'Walled Lanes', 'Rail Knot', 'Neon Clinics', 'Typhoon Docks', 'Under-Reach'], [0, 2, 3, 6, 7], 2, true),
+  },
+];
+
+export const CITY_BY_ID = new Map(CITIES.map((c) => [c.id, c]));
+export const ALL_REGIONS = CITIES.flatMap((c) => c.regions);
+export const REGION_BY_ID = new Map(ALL_REGIONS.map((r) => [r.id, r]));
+
+export function cityOfRegion(regionId: string): string {
+  return CITIES.find((c) => c.regions.some((r) => r.id === regionId))?.id ?? HOME_CITY;
+}
+
+export const EXTENDED_LENGTH = 40;
+/** A city counts as yours once you control this many of its eight districts. */
+export const CITY_CONTROL_DISTRICTS = 5;
+/** Control this many cities to win an extended campaign. */
+export const CITIES_TO_WIN = 3;
+export const SAFEHOUSE_COST = 4000;
+
+export type ConditionId = 'emp' | 'scanners' | 'crowd' | 'rain' | 'blackout';
+
+export const CONDITIONS: Record<ConditionId, { name: string; desc: string }> = {
+  emp: { name: 'EMP field', desc: 'Powered augments are dead from the moment the team goes in.' },
+  scanners: { name: 'Scanner gates', desc: 'Skin augments give no stealth here.' },
+  crowd: { name: 'Crowded venue', desc: '+2 stealth for everyone, +4 more with social camouflage.' },
+  rain: { name: 'Heavy rain', desc: '+3 stealth for everyone, −2 perception.' },
+  blackout: { name: 'Blackout', desc: '+2 stealth for everyone, +4 perception with thermal optics.' },
+};
 export const CONTROL_AT = 100;
 /** A controlled district is lost if influence falls below this. */
 export const LOSE_CONTROL_BELOW = 50;

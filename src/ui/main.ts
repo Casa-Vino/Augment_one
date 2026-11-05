@@ -1,16 +1,16 @@
 import './style.css';
 import { agentTraits, derive, malfunctionChance, NO_DRUGS, type Derived } from '../sim/agent';
 import {
-  agentNeedsDose, bondName, burnChance, calyxStops, debriefCaptive, deploy, districtIncome, doseCost, installAugment, isFinished, isUnlocked, livingAgents,
-  migrate, newCampaign, offerPlace, persuadeChance, placeSleeper, recallSleeper, recruit, releaseCaptive, removeAugment, rest, runCalyx, score, setLore,
-  startResearch, toleranceBonus, weeklyCosts, type CampaignState, type MissionOrders, type SquadOrder,
+  agentNeedsDose, bondName, burnChance, calyxStops, campaignLength, controlledCities, debriefCaptive, deploy, districtIncome, doseCost, installAugment, isFinished,
+  isUnlocked, livingAgents, migrate, newCampaign, offerPlace, openSafehouse, persuadeChance, placeSleeper, recallSleeper, recruit, releaseCaptive, removeAugment,
+  rest, runCalyx, score, setLore, startResearch, toleranceBonus, travel, weeklyCosts, type CampaignState, type GameMode, type MissionOrders, type SquadOrder,
 } from '../sim/campaign';
 import {
-  AUGMENTS, CAMPAIGN_LENGTH, CONTROL_AT, MAX_ROSTER, MAX_SQUAD, MISSIONS, PRICES, REGION_BY_ID, REGIONS, RESEARCH, RIVAL_SYNDICATE, SLOT_LABELS, SLOTS,
-  TRAITS,
+  AUGMENTS, CAMPAIGN_LENGTH, CITIES, CITIES_TO_WIN, CITY_BY_ID, CITY_CONTROL_DISTRICTS, cityOfRegion, CONDITIONS, CONTROL_AT, EXTENDED_LENGTH, HOME_CITY,
+  MAX_ROSTER, MAX_SQUAD, MISSIONS, PRICES, REGION_BY_ID, REGIONS, RESEARCH, RIVAL_SYNDICATE, SAFEHOUSE_COST, SLOT_LABELS, SLOTS, TRAITS, type Region,
 } from '../sim/data';
 import { agentBio, AUGMENT_LORE, briefingLine, CODEX, rivalLine } from '../sim/lore';
-import { bondBonusFor, bondKey, bondLevel, missionPhases, resolveMission } from '../sim/mission';
+import { applyCondition, bondBonusFor, bondKey, bondLevel, missionPhases, resolveMission } from '../sim/mission';
 import { hashSeed } from '../sim/rng';
 import type { Agent, Augment, Contract, Drugs, PhaseKind, RivalOrders, RulesOfEngagement, Slot, Stat } from '../sim/types';
 import { estimatePhases, powerRunsOutAt } from './odds';
@@ -21,8 +21,10 @@ import { mountReplay, type ReplayController } from './replay';
 
 const SAVE_KEY = 'augment-save-v3';
 const OLDER_SAVE_KEYS = ['augment-save-v2', 'augment-save-v1'];
+const EXTENDED_SAVE_KEY = 'augment-extended-v1';
 
 type Screen =
+  | { name: 'menu' }
   | { name: 'hq' }
   | { name: 'agent'; agentId: string; slot?: Slot; inspect?: string }
   | { name: 'plan'; contractId: string }
@@ -31,8 +33,10 @@ type Screen =
   | { name: 'calyx' }
   | { name: 'help' };
 
-let game: CampaignState = load() ?? newCampaign(randomSeed());
-let screen: Screen = { name: 'hq' };
+let game: CampaignState = load('casual') ?? newCampaign(randomSeed());
+let screen: Screen = { name: 'menu' };
+let viewCity = HOME_CITY;
+let returnTo: Screen = { name: 'hq' };
 let squad = new Map<string, SquadOrder>();
 let missionOrders: MissionOrders = { rules: 'lethal', rivalOrders: 'avoid' };
 let toast: { text: string; bad: boolean } | null = null;
@@ -47,10 +51,12 @@ function randomSeed(): number {
   return Math.floor(Math.random() * 2 ** 31);
 }
 
-function load(): CampaignState | null {
+function load(mode: GameMode): CampaignState | null {
   try {
-    const raw = [SAVE_KEY, ...OLDER_SAVE_KEYS].map((k) => localStorage.getItem(k)).find((v) => v);
-    return raw ? migrate(JSON.parse(raw)) : null;
+    const keys = mode === 'extended' ? [EXTENDED_SAVE_KEY] : [SAVE_KEY, ...OLDER_SAVE_KEYS];
+    const raw = keys.map((k) => localStorage.getItem(k)).find((v) => v);
+    const state = raw ? migrate(JSON.parse(raw)) : null;
+    return state && state.mode === mode ? state : null;
   } catch {
     return null;
   }
@@ -58,7 +64,7 @@ function load(): CampaignState | null {
 
 function save() {
   try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify(game));
+    localStorage.setItem(game.mode === 'extended' ? EXTENDED_SAVE_KEY : SAVE_KEY, JSON.stringify(game));
   } catch {
     // Saving is a convenience; the game still runs without storage.
   }
@@ -128,15 +134,19 @@ function topbar() {
   const done = isFinished(game);
   return `
   <header class="topbar">
-    <button class="brand" data-action="home" aria-label="Back to HQ">AUGMENT</button>
+    <button class="brand" data-action="menu" aria-label="Main menu">AUGMENT</button>
+    ${game.mode === 'extended' ? '<span class="mode-tag">EXTENDED</span>' : ''}
     <div class="readouts">
-      <span><small>Turn</small> ${Math.min(game.turn, CAMPAIGN_LENGTH)}/${CAMPAIGN_LENGTH}${done ? ' · ended' : ''}</span>
+      <span><small>Turn</small> ${Math.min(game.turn, campaignLength(game))}/${campaignLength(game)}${done ? ' · ended' : ''}</span>
       <span><small>Credits</small> ${cr(game.money)}</span>
       <span><small>Research</small> ${game.rp} RP</span>
       <span title="Reputation for clean work. Helps persuade captives."><small>Standing</small> ${game.standing}</span>
-      <span title="Districts you control"><small>Districts</small> ${game.owned.length}/${REGIONS.length}</span>
+      ${game.mode === 'extended'
+        ? `<span title="Cities you control (${CITY_CONTROL_DISTRICTS} of 8 districts each)"><small>Cities</small> ${controlledCities(game).length}/${CITIES_TO_WIN}</span>`
+        : `<span title="Districts you control"><small>Districts</small> ${game.owned.length}/${REGIONS.length}</span>`}
     </div>
     <div class="top-actions">
+      <button class="ghost" data-action="home">HQ</button>
       <button class="ghost" data-action="codex">Codex</button>
       <button class="ghost" data-action="help">How to play</button>
       <button class="ghost" data-action="new-campaign">New campaign</button>
@@ -157,6 +167,10 @@ function agentCard(agent: Agent) {
   if (agent.status === 'kia' || agent.status === 'missing') {
     return `<div class="card agent kia"><div class="row"><strong>${esc(agent.name)}</strong><span class="tag bad">${agent.status === 'kia' ? 'KIA' : 'Missing'}</span></div><p class="muted">${agent.missions} missions</p></div>`;
   }
+  if (agent.status === 'transit') {
+    return `<div class="card agent sleeper"><div class="row"><strong>${esc(agent.name)}</strong><span class="tag warn">Travelling</span></div>
+      <p class="muted small">Arrives in ${esc(CITY_BY_ID.get(agent.location ?? HOME_CITY)!.name)} next turn.</p></div>`;
+  }
   if (agent.status === 'sleeper') {
     const sleeper = game.sleepers.find((x) => x.agentId === agent.id);
     const region = sleeper ? REGION_BY_ID.get(sleeper.regionId) : undefined;
@@ -169,6 +183,7 @@ function agentCard(agent: Agent) {
   return `
   <button class="card agent" data-action="open-agent" data-id="${agent.id}">
     <div class="row"><strong>${esc(agent.name)}</strong>${agent.origin === 'captive' ? '<span class="tag">Turned</span>' : ''}${injured ? '<span class="tag bad">Injured</span>' : ''}</div>
+    ${game.mode === 'extended' ? `<p class="loc">${esc(CITY_BY_ID.get(agent.location ?? HOME_CITY)!.name)}</p>` : ''}
     ${hpBar(agent)}
     ${slotPips(agent)}
     <div class="traits">${traitChips(agent)}</div>
@@ -188,6 +203,7 @@ function contractCard(c: Contract) {
     ${lore() ? `<p class="quote">${esc(briefingLine(c.type, c.target, hashSeed(c.id, game.seed)))}</p>` : `<p class="muted">${m.blurb}</p>`}
     <div class="phases">${missionPhases(c).map((p) => `<span class="phase ${p.kind}" title="${esc(p.name)}">${KIND_LABELS[p.kind]}</span>`).join('<span class="arrow">›</span>')}</div>
     <div class="flags">
+      ${c.condition ? `<span class="tag cond" title="${esc(CONDITIONS[c.condition].desc)}">${CONDITIONS[c.condition].name}</span>` : ''}
       ${c.rival ? `<span class="tag warn">Rival on site</span>` : ''}
       ${c.cleanBonus ? `<span class="tag good" title="Paid if nobody is killed">+${cr(c.cleanBonus)} if no deaths</span>` : ''}
     </div>
@@ -195,9 +211,13 @@ function contractCard(c: Contract) {
   </div>`;
 }
 
+function visibleRegions(): Region[] {
+  return game.mode === 'extended' ? CITY_BY_ID.get(viewCity)!.regions : REGIONS;
+}
+
 function cityMap() {
   return `<svg class="citymap" viewBox="0 0 800 520" role="group" aria-label="City map">
-    ${REGIONS.map((r) => {
+    ${visibleRegions().map((r) => {
       const inf = game.influence[r.id] ?? 0;
       const owned = game.owned.includes(r.id);
       const sel = selectedRegion === r.id;
@@ -271,6 +291,52 @@ function holdingCell() {
   </section>`;
 }
 
+function worldMap() {
+  const lands = [
+    '60,110 200,90 230,170 180,260 120,300 70,220',
+    '250,90 420,70 520,90 560,150 500,190 430,210 360,230 300,200 260,150',
+    '330,240 450,230 480,300 440,370 380,380 340,320',
+    '560,120 700,100 760,160 730,240 640,270 590,220',
+  ];
+  const home = CITY_BY_ID.get(HOME_CITY)!;
+  return `<svg class="worldmap" viewBox="0 0 800 420" role="group" aria-label="World map">
+    ${[70, 140, 210, 280, 350].map((y) => `<line x1="0" y1="${y}" x2="800" y2="${y}" class="lat"/>`).join('')}
+    ${lands.map((p) => `<polygon points="${p}" class="land"/>`).join('')}
+    ${CITIES.filter((c) => c.id !== HOME_CITY).map((c) => `<line x1="${home.pos[0]}" y1="${home.pos[1]}" x2="${c.pos[0]}" y2="${c.pos[1]}" class="route ${game.safehouses.includes(c.id) ? 'open' : ''}"/>`).join('')}
+    ${CITIES.map((c) => {
+      const owned = c.regions.filter((r) => game.owned.includes(r.id)).length;
+      const safe = game.safehouses.includes(c.id);
+      const held = owned >= CITY_CONTROL_DISTRICTS;
+      return `<g class="city ${viewCity === c.id ? 'sel' : ''} ${safe ? 'safe' : ''}" data-action="view-city" data-id="${c.id}" role="button" tabindex="0" aria-label="${c.name}">
+        <circle cx="${c.pos[0]}" cy="${c.pos[1]}" r="22" class="halo"/>
+        <circle cx="${c.pos[0]}" cy="${c.pos[1]}" r="${held ? 10 : 7}" class="node ${held ? 'held' : ''}"/>
+        <text x="${c.pos[0]}" y="${c.pos[1] - 30}" text-anchor="middle" class="cname">${c.name.toUpperCase()}</text>
+        <text x="${c.pos[0]}" y="${c.pos[1] + 40}" text-anchor="middle" class="cinf">${held ? 'CONTROLLED' : safe ? `SAFEHOUSE · ${owned}/8` : `${cr(SAFEHOUSE_COST)} TO OPEN`}</text>
+      </g>`;
+    }).join('')}
+  </svg>`;
+}
+
+function worldPanel() {
+  const city = CITY_BY_ID.get(viewCity)!;
+  const owned = city.regions.filter((r) => game.owned.includes(r.id)).length;
+  const lantern = city.regions.filter((r) => r.lantern).length;
+  const here = game.roster.filter((a) => (a.location ?? HOME_CITY) === city.id && (a.status === 'active' || a.status === 'sleeper'));
+  const safe = game.safehouses.includes(city.id);
+  const finished = isFinished(game);
+  return `<div class="district-panel">
+    <h3>${city.name}</h3>
+    ${lore() ? `<p class="quote">${esc(city.blurb)}</p>` : ''}
+    <div class="mini"><span>Districts held ${owned}/8 (need ${CITY_CONTROL_DISTRICTS})</span><span>Threat +${city.tier}</span></div>
+    <div class="bar"><span style="width:${(owned / CITY_CONTROL_DISTRICTS) * 100}%"></span></div>
+    <p class="muted small">${lantern} of 8 districts are ${RIVAL_SYNDICATE} territory. ${here.length ? `Your people here: ${here.map((a) => esc(a.name)).join(', ')}.` : 'None of your people are here.'}</p>
+    ${safe ? '<p class="small good">You have a safehouse here. Its contracts appear below.</p>'
+      : `<button data-action="safehouse" data-id="${city.id}" ${finished || game.money < SAFEHOUSE_COST ? 'disabled' : ''}>Open a safehouse · ${cr(SAFEHOUSE_COST)}</button>
+         <p class="muted small">A safehouse brings this city's contracts onto your board and lets agents travel here. It costs ${cr(PRICES.safehouseUpkeep)} a turn to keep.</p>`}
+    <p class="muted small">Win by controlling ${CITIES_TO_WIN} cities within ${EXTENDED_LENGTH} turns. You control ${controlledCities(game).length}.</p>
+  </div>`;
+}
+
 function hqView() {
   const living = livingAgents(game);
   const finished = isFinished(game);
@@ -286,17 +352,22 @@ function hqView() {
     <li><button class="link" data-action="view-debrief" data-index="${i}">Turn ${h.turn}: ${MISSIONS[h.contract.type].label}, ${esc(h.contract.target)}</button>
       <span class="tag ${h.result.success ? 'good' : 'bad'}">${h.result.success ? (h.result.compromised ? 'Compromised' : 'Success') : 'Failed'}</span></li>`).join('');
 
+  const extended = game.mode === 'extended';
+  const cityName = extended ? CITY_BY_ID.get(viewCity)!.name : 'The city';
+  const contracts = extended ? game.contracts.filter((c) => c.regionId && cityOfRegion(c.regionId) === viewCity) : game.contracts;
+  const canRecruitHere = !extended || game.safehouses.includes(viewCity);
   return `
   ${finished ? endBanner(finished) : ''}
   <main class="hq">
+    ${extended ? `<section class="panel world"><div class="panel-head"><h2>The world</h2></div><div class="city-grid">${worldMap()}${worldPanel()}</div></section>` : ''}
     <section class="panel city">
-      <div class="panel-head"><h2>The city</h2>${finished ? '' : '<button class="ghost" data-action="rest" title="Skip a turn. Everyone heals; sleepers keep working; running costs are still due.">Lie low a turn</button>'}</div>
+      <div class="panel-head"><h2>${esc(cityName)}</h2>${finished ? '' : '<button class="ghost" data-action="rest" title="Skip a turn. Everyone heals; sleepers keep working; running costs are still due.">Lie low a turn</button>'}</div>
       <div class="city-grid">${cityMap()}${districtPanel()}</div>
     </section>
     <div class="col">
       ${game.news.length ? `<section class="panel news"><h2>Overnight</h2><ul class="list events">${game.news.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></section>` : ''}
       <section class="panel roster">
-        <div class="panel-head"><h2>Roster</h2><button data-action="recruit" ${finished || living.length >= MAX_ROSTER || game.money < PRICES.recruit ? 'disabled' : ''}>Recruit ${cr(PRICES.recruit)}</button></div>
+        <div class="panel-head"><h2>Roster</h2><button data-action="recruit" ${finished || !canRecruitHere || living.length >= MAX_ROSTER || game.money < PRICES.recruit ? 'disabled' : ''}>Recruit${extended ? ` in ${esc(cityName)}` : ''} ${cr(PRICES.recruit)}</button></div>
         <div class="grid">${game.roster.map(agentCard).join('')}</div>
         <p class="muted small">Running costs ${cr(weeklyCosts(game))} a turn. Agents heal 30 HP a turn while not deployed.</p>
       </section>
@@ -308,8 +379,8 @@ function hqView() {
     </div>
     <div class="col">
       <section class="panel contracts">
-        <h2>Contracts</h2>
-        ${finished ? '<p class="muted">The campaign is over.</p>' : game.contracts.map(contractCard).join('')}
+        <h2>Contracts${extended ? ` · ${esc(cityName)}` : ''}</h2>
+        ${finished ? '<p class="muted">The campaign is over.</p>' : contracts.length ? contracts.map(contractCard).join('') : '<p class="muted">No contracts here. Open a safehouse to work this city.</p>'}
       </section>
       <section class="panel market">
         <h2>Night market</h2>
@@ -327,19 +398,22 @@ function hqView() {
 }
 
 function footer() {
-  const older = versions.filter((v) => v !== 'v4');
+  const older = versions.filter((v) => v !== 'v5');
   return `<footer class="footer">
-    <span>Augment v4</span>
+    <span>Augment v5</span>
     ${older.length ? `<span>Earlier versions: ${older.map((v) => `<a href="./${v}/">${v}</a>`).join(' · ')}</span>` : ''}
     <span class="muted">On a phone: open this page, then “Add to Home Screen” or “Install app” to play it like an app, offline too.</span>
   </footer>`;
 }
 
-function endBanner(kind: 'won' | 'lost') {
+function endBanner(kind: 'won' | 'lost' | 'timeout') {
   const wins = game.history.filter((h) => h.result.success).length;
   const clean = game.history.filter((h) => h.result.success && h.result.kills === 0).length;
-  return `<div class="banner ${kind}">
-    <div><h2>${kind === 'won' ? 'Campaign complete' : 'The syndicate has collapsed'}</h2>
+  const title = kind === 'won'
+    ? game.mode === 'extended' ? `${controlledCities(game).length} cities are yours` : 'Campaign complete'
+    : kind === 'timeout' ? 'Time has run out' : 'The syndicate has collapsed';
+  return `<div class="banner ${kind === 'won' ? 'won' : 'lost'}">
+    <div><h2>${title}</h2>
     <p>${wins} of ${game.history.length} contracts completed (${clean} without a death) · ${livingAgents(game).length} agents · standing ${game.standing} · ${cr(game.money)}. Score <strong>${score(game).toLocaleString('en-GB')}</strong>.</p></div>
     <button data-action="new-campaign">New campaign</button>
   </div>`;
@@ -461,6 +535,7 @@ function agentView(agentId: string, openSlot?: Slot, inspect?: string) {
         ${slots}
       </section>
       <section class="panel readout">
+        ${travelPanel(agent)}
         <h2>Capabilities</h2>
         ${statBars(d)}
         <p class="muted small">Shown without squad bonuses. Some traits only apply in small or large squads, or on non-lethal missions.</p>
@@ -493,9 +568,12 @@ function squadDerived(orders: SquadOrder[]) {
   const ids = orders.map((o) => o.agentId);
   return orders.map((o) => {
     const agent = game.roster.find((a) => a.id === o.agentId)!;
-    return derive(agent, {
+    const contract = screen.name === 'plan' ? game.contracts.find((c) => c.id === (screen as { contractId: string }).contractId) : undefined;
+    const d = derive(agent, {
       drugs: o.drugs, toleranceBonus: toleranceBonus(game), squadSize: orders.length, rules: missionOrders.rules, bondBonus: bondBonusFor(o.agentId, ids, game.bonds),
+      poweredDown: contract?.condition === 'emp',
     });
+    return applyCondition(d, agent, contract?.condition);
   });
 }
 
@@ -539,7 +617,10 @@ function planView(contractId: string) {
   const ids = orders.map((o) => o.agentId);
   const phaseList = missionPhases(contract);
 
-  const agents = livingAgents(game).map((agent) => {
+  const contractCity = contract.regionId ? cityOfRegion(contract.regionId) : HOME_CITY;
+  const available = livingAgents(game).filter((a) => game.mode !== 'extended' || (a.location ?? HOME_CITY) === contractCity);
+  const elsewhere = livingAgents(game).length - available.length;
+  const agents = available.map((agent) => {
     const order = squad.get(agent.id);
     const d = order ? team[ids.indexOf(agent.id)] : agentDerived(agent);
     const runsOut = order ? powerRunsOutAt(contract, d) : null;
@@ -577,6 +658,7 @@ function planView(contractId: string) {
     <p>${esc(contract.client)} · ${esc(contract.target)} · <span class="pay">${cr(contract.payout)}</span>${contract.cleanBonus ? ` <span class="tag good">+${cr(contract.cleanBonus)} if nobody dies</span>` : ''}</p>
     ${lore() ? `<p class="quote">${esc(briefingLine(contract.type, contract.target, hashSeed(contract.id, game.seed)))}</p>` : ''}
     <p class="muted">${m.blurb}</p>
+    ${contract.condition ? `<p class="condition"><span class="tag cond">${CONDITIONS[contract.condition].name}</span> ${esc(CONDITIONS[contract.condition].desc)}</p>` : ''}
     <div class="two-col">
       <section class="panel">
         <h2>Rules of engagement</h2>
@@ -584,6 +666,7 @@ function planView(contractId: string) {
         <p class="muted small">${missionOrders.rules === 'lethal' ? 'Guards who get in the way are killed.' : 'Guards are knocked out, never killed. Harder without non-lethal gear, but earns standing, extra research and any no-deaths bonus.'}</p>
         ${rivalDossier(contract)}
         <h2>Squad <small class="muted">${squad.size}/${MAX_SQUAD}</small></h2>
+        ${elsewhere ? `<p class="muted small">${elsewhere} ${elsewhere === 1 ? 'agent is' : 'agents are'} in other cities. Send people here from their agent screen.</p>` : ''}
         <div class="grid picks">${agents}</div>
       </section>
       <section class="panel">
@@ -659,7 +742,7 @@ function codexView() {
     .join('');
   return `
   <main class="codex">
-    <div class="crumbs"><button class="link" data-action="home">‹ HQ</button></div>
+    <div class="crumbs"><button class="link" data-action="back">‹ Back</button></div>
     <h1>Codex</h1>
     <label class="toggle"><input type="checkbox" data-action="toggle-lore" ${lore() ? 'checked' : ''}/> Show lore in briefings and dossiers</label>
     <div class="two-col">
@@ -682,7 +765,7 @@ function codexView() {
 function helpView() {
   return `
   <main class="help">
-    <div class="crumbs"><button class="link" data-action="home">‹ HQ</button></div>
+    <div class="crumbs"><button class="link" data-action="back">‹ Back</button></div>
     <h1>How to play</h1>
     <section class="panel prose">
       <p>You run a small syndicate of agents for ${CAMPAIGN_LENGTH} turns. Each turn, pick one contract, choose a squad and send them in. The mission plays out on its own; the debrief tells you why it went the way it did.</p>
@@ -705,6 +788,11 @@ function helpView() {
         <li><b>Non-lethal missions</b> knock guards out instead. Without arc gloves, sedative mist or the right trait, takedowns are harder.</li>
         <li><b>Leaving no bodies</b> raises your standing, earns extra research and collects any no-deaths bonus the client offers. Pure stealth counts too.</li>
         <li><b>Rival operatives</b> from ${RIVAL_SYNDICATE} sometimes work the same site. Avoid them, eliminate them, or capture them and carry them home. A captive can be released, debriefed for research, or offered a place on your team, augments included.</li>
+      </ul>
+      <h2>Two ways to play</h2>
+      <ul>
+        <li><b>Casual</b> is the original: one city, ${CAMPAIGN_LENGTH} turns.</li>
+        <li><b>Extended</b> spreads across four cities. Open safehouses to take a city's contracts, and send agents between them (a turn's travel). Contracts there can have site conditions: an EMP field kills powered augments, scanner gates beat skin augments, and crowds, rain and blackouts help stealth. Control ${CITY_CONTROL_DISTRICTS} districts of a city to hold it; hold ${CITIES_TO_WIN} cities within ${EXTENDED_LENGTH} turns to win.</li>
       </ul>
       <h2>The city</h2>
       <ul>
@@ -788,10 +876,62 @@ function mountDebriefReplay() {
   if (!instant) activeReplay.play();
 }
 
+function menuView() {
+  const casual = load('casual');
+  const extended = load('extended');
+  const summary = (st: CampaignState | null) =>
+    st ? `Turn ${Math.min(st.turn, campaignLength(st))} of ${campaignLength(st)} · ${livingAgents(st).length} agents · ${cr(st.money)}${isFinished(st) ? ' · finished' : ''}` : '';
+  return `
+  <main class="menu">
+    <div class="menu-title">
+      <p class="mono menu-kicker">A SYNDICATE OF SIX BODY SLOTS</p>
+      <h1>AUGMENT</h1>
+      <p class="menu-tag">Every implant has a price. Every agent has a story.</p>
+    </div>
+    <section class="menu-mode casual">
+      <h2>Casual</h2>
+      <p>The original game. One city, ten turns, a cell of agents and whatever you bolt onto them. Short, readable, done in an evening.</p>
+      <div class="menu-actions">
+        ${casual ? `<button class="primary" data-action="play" data-mode="casual">Continue<small>${summary(casual)}</small></button>` : ''}
+        <button class="${casual ? 'ghost' : 'primary'}" data-action="new-game" data-mode="casual">New casual game</button>
+      </div>
+    </section>
+    <section class="menu-mode extended">
+      <h2>Extended campaign <span class="tag">New</span></h2>
+      <p>Everything from casual, across four cities. Open safehouses, move your agents between them, and face site conditions that change how augments perform. Take three cities within ${EXTENDED_LENGTH} turns.</p>
+      <div class="menu-actions">
+        ${extended ? `<button data-action="play" data-mode="extended">Continue<small>${summary(extended)}</small></button>` : ''}
+        <button class="ghost" data-action="new-game" data-mode="extended">New extended campaign</button>
+      </div>
+    </section>
+    <nav class="menu-links" aria-label="More">
+      <button class="link" data-action="codex">Codex</button>
+      <button class="link" data-action="help">How to play</button>
+      ${versions.filter((v) => v !== 'v5').map((v) => `<a href="./${v}/">${v}</a>`).join('')}
+    </nav>
+  </main>`;
+}
+
+function travelPanel(agent: Agent) {
+  if (game.mode !== 'extended' || agent.status === 'kia' || agent.status === 'missing') return '';
+  const here = agent.location ?? HOME_CITY;
+  const options = game.safehouses.filter((c) => c !== here);
+  return `<h2>Location</h2>
+    <p>${agent.status === 'transit' ? `Travelling to <b>${esc(CITY_BY_ID.get(here)!.name)}</b>. Arrives next turn.` : `In <b>${esc(CITY_BY_ID.get(here)!.name)}</b>.`}</p>
+    ${agent.status === 'active' && options.length
+      ? `<div class="sleeper-picks">${options.map((c) => `<button class="ghost" data-action="travel" data-id="${agent.id}" data-city="${c}" ${game.money < PRICES.travel ? 'disabled' : ''}>Send to ${esc(CITY_BY_ID.get(c)!.name)} · ${cr(PRICES.travel)}</button>`).join('')}</div>
+         <p class="muted small">Travel takes a turn. Contracts can only use agents in that city.</p>`
+      : agent.status === 'active' ? '<p class="muted small">Open a safehouse in another city to send agents there.</p>' : ''}`;
+}
+
 function render() {
   activeReplay?.destroy();
   activeReplay = null;
-  let body: string;
+  if (screen.name === 'menu') {
+    app.innerHTML = `${toast ? `<div class="toast ${toast.bad ? 'bad' : ''}" role="status">${esc(toast.text)}</div>` : ''}${menuView()}${footer()}`;
+    return;
+  }
+  let body = '';
   switch (screen.name) {
     case 'hq': body = hqView(); break;
     case 'agent': body = agentView(screen.agentId, screen.slot, screen.inspect); break;
@@ -819,13 +959,45 @@ app.addEventListener('click', (event) => {
   toast = null;
   switch (action) {
     case 'home': return go({ name: 'hq' });
-    case 'help': return go({ name: 'help' });
-    case 'codex': return go({ name: 'codex' });
-    case 'new-campaign':
-      if (game.history.length && !confirm('Abandon this campaign and start a new one?')) return;
-      game = { ...newCampaign(randomSeed()), settings: game.settings };
+    case 'help':
+      returnTo = screen;
+      return go({ name: 'help' });
+    case 'codex':
+      returnTo = screen;
+      return go({ name: 'codex' });
+    case 'back': return go(returnTo);
+    case 'menu': return go({ name: 'menu' });
+    case 'play': {
+      const mode = el.dataset.mode as GameMode;
+      const loaded = load(mode);
+      if (loaded) game = loaded;
+      viewCity = HOME_CITY;
+      selectedRegion = null;
+      return go({ name: 'hq' });
+    }
+    case 'new-game': {
+      const mode = el.dataset.mode as GameMode;
+      const existing = load(mode);
+      if (existing?.history.length && !confirm(`Abandon your ${mode} campaign and start a new one?`)) return;
+      game = { ...newCampaign(randomSeed(), mode), settings: game.settings };
+      viewCity = HOME_CITY;
+      selectedRegion = null;
       save();
       return go({ name: 'hq' });
+    }
+    case 'new-campaign':
+      if (game.history.length && !confirm('Abandon this campaign and start a new one?')) return;
+      game = { ...newCampaign(randomSeed(), game.mode), settings: game.settings };
+      viewCity = HOME_CITY;
+      save();
+      return go({ name: 'hq' });
+    case 'view-city':
+      viewCity = id!;
+      selectedRegion = null;
+      if (screen.name !== 'hq') return go({ name: 'hq' });
+      break;
+    case 'safehouse': apply(openSafehouse(game, id!), 'Safehouse open. New contracts are on the board.'); break;
+    case 'travel': apply(travel(game, id!, el.dataset.city!), 'On the way. They arrive next turn.'); break;
     case 'open-agent': return go({ name: 'agent', agentId: id! });
     case 'toggle-slot':
       if (screen.name === 'agent') screen = { ...screen, slot: screen.slot === slot ? undefined : (slot as Slot), inspect: undefined };
@@ -842,7 +1014,7 @@ app.addEventListener('click', (event) => {
     case 'remove':
       if (screen.name === 'agent') apply(removeAugment(game, screen.agentId, slot as Slot), 'Augment removed.');
       break;
-    case 'recruit': apply(recruit(game), 'New agent recruited.'); break;
+    case 'recruit': apply(recruit(game, game.mode === 'extended' ? viewCity : undefined), 'New agent recruited.'); break;
     case 'research': apply(startResearch(game, id!), 'Research complete.'); break;
     case 'rest': apply(rest(game), 'The team lies low for a turn.'); break;
     case 'offer': {

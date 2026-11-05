@@ -1,7 +1,7 @@
 // Resolves a mission phase by phase from a seed, and writes the debrief as it goes.
 // The same contract, squad, orders and seed always produce the same result.
 import { derive, drugLoad, loudestSource, malfunctionChance, topSource, type Derived } from './agent';
-import { BOND_LEVELS, MISSIONS, NONLETHAL_PENALTY, RIVAL_SYNDICATE } from './data';
+import { AUGMENT_BY_ID, BOND_LEVELS, CONDITIONS, MISSIONS, NONLETHAL_PENALTY, RIVAL_SYNDICATE } from './data';
 import { createRng } from './rng';
 import type {
   Agent, AgentOutcome, Contract, Drugs, Limb, LogLine, MissionResult, PhaseTemplate, ReplayEvent, RivalOrders, RulesOfEngagement,
@@ -111,6 +111,30 @@ export function attackPenalty(d: Derived, rules: RulesOfEngagement): number {
   return rules === 'nonlethal' && !d.tags.has('nonlethal') ? NONLETHAL_PENALTY : 0;
 }
 
+/** Adjusts an agent's derived stats for a contract's site condition (extended mode). */
+export function applyCondition(d: Derived, agent: Agent, condition: Contract['condition']): Derived {
+  if (!condition) return d;
+  const stats = { ...d.stats };
+  switch (condition) {
+    case 'scanners':
+      stats.stealth -= AUGMENT_BY_ID.get(agent.augments.skin ?? '')?.stats.stealth ?? 0;
+      break;
+    case 'crowd':
+      stats.stealth += 2 + (agent.augments.skin === 'social-camo' ? 4 : 0);
+      break;
+    case 'rain':
+      stats.stealth += 3;
+      stats.perception -= 2;
+      break;
+    case 'blackout':
+      stats.stealth += 2;
+      if (agent.augments.optics === 'thermal-optics') stats.perception += 4;
+      break;
+  }
+  for (const key of Object.keys(stats) as (keyof typeof stats)[]) stats[key] = Math.max(0, stats[key]);
+  return { ...d, stats };
+}
+
 export function resolveMission(input: MissionInput): MissionResult {
   const rng = createRng(input.seed);
   const { contract } = input;
@@ -122,14 +146,19 @@ export function resolveMission(input: MissionInput): MissionResult {
   const lethal = rules === 'lethal';
 
   const squadIds = input.squad.map((m) => m.agent.id);
+  const emp = contract.condition === 'emp';
   const deriveFor = (m: { agent: Agent; drugs: Drugs }, bondBonus: number, poweredDown = false) =>
-    derive(m.agent, { drugs: m.drugs, toleranceBonus: input.toleranceBonus, squadSize: input.squad.length, rules, bondBonus, poweredDown });
+    applyCondition(
+      derive(m.agent, { drugs: m.drugs, toleranceBonus: input.toleranceBonus, squadSize: input.squad.length, rules, bondBonus, poweredDown: poweredDown || emp }),
+      m.agent,
+      contract.condition,
+    );
 
   const ops: Operative[] = input.squad.map((m) => {
     const bondBonus = bondBonusFor(m.agent.id, squadIds, input.bonds);
     const d = deriveFor(m, bondBonus);
     return {
-      agent: m.agent, drugs: m.drugs, dosed: m.dosed, d, bondBonus, hp: m.agent.hp, energy: d.energy, powered: true,
+      agent: m.agent, drugs: m.drugs, dosed: m.dosed, d, bondBonus, hp: m.agent.hp, energy: d.energy, powered: !emp,
       downed: false, stunned: false, rally: 0, kills: 0, subdued: 0, hacks: 0,
     };
   });
@@ -147,6 +176,7 @@ export function resolveMission(input: MissionInput): MissionResult {
 
   say(`${template.label}: ${contract.target}, for ${contract.client}.`, 'header');
   say(`Squad: ${ops.map((o) => o.agent.name).join(', ')}. Threat level ${diff}. ${lethal ? 'Lethal force authorised.' : 'Non-lethal: nobody dies today.'}`);
+  if (contract.condition) say(`Site condition: ${CONDITIONS[contract.condition].name}. ${CONDITIONS[contract.condition].desc}`, contract.condition === 'emp' || contract.condition === 'scanners' ? 'bad' : 'info');
   const bonded = ops.filter((o) => o.bondBonus > 0);
   if (bonded.length >= 2) say(`${listNames(bonded.map((o) => o.agent.name))} have worked together before, and it shows.`, 'good');
 
